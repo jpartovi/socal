@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+.turbo/
+.next/
+dist/
+build/
+out/
+
+# Env
+.env
+.env.*.local
+.env*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Convex
+.convex/
+
+# iOS (future — apps/ios/ will land here)
+apps/ios/**/DerivedData/
+apps/ios/**/xcuserdata/
+apps/ios/**/.swiftpm/xcode/xcuserdata/
+apps/ios/**/build/
+apps/ios/**/.build/

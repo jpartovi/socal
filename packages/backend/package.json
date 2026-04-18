@@ -1,0 +1,30 @@
+{
+  "name": "@socal/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./convex/_generated/api": {
+      "types": "./convex/_generated/api.d.ts",
+      "default": "./convex/_generated/api.js"
+    },
+    "./convex/_generated/dataModel": {
+      "types": "./convex/_generated/dataModel.d.ts",
+      "default": "./convex/_generated/dataModel.js"
+    },
+    "./convex/_generated/server": {
+      "types": "./convex/_generated/server.d.ts",
+      "default": "./convex/_generated/server.js"
+    }
+  },
+  "scripts": {
+    "dev": "convex dev",
+    "build": "convex codegen",
+    "deploy": "convex deploy",
+    "lint": "eslint . --max-warnings 0 || true",
+    "typecheck": "tsc -p convex/tsconfig.json --noEmit || true"
+  },
+  "dependencies": {
+    "convex": "^1.35.1"
+  }
+}

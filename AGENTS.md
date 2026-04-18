@@ -23,7 +23,7 @@ The goal is to maximize what's shared without overfitting. We deliberately scaff
 | Auth | none; bare `<ConvexProvider>` | TBD provider (see "Adding auth") |
 | Shared TS code | — | `packages/shared` (zod schemas, enums) when ≥ 2 workspaces need the same thing |
 | Design tokens | — | `packages/design-tokens` + Style Dictionary → TS + `Tokens.swift` when real designs exist |
-| CI | `.github/workflows/web.yml` (Linux) | `.github/workflows/ios.yml` (macOS-14) when iOS lands |
+| CI | — | `.github/workflows/web.yml` (Linux) when repo has a remote; `ios.yml` (macOS-14) when iOS lands |
 
 ## Folder layout
 
@@ -36,8 +36,6 @@ socal/
 ├── packages/
 │   ├── backend/                # Convex: schema.ts, convex/
 │   └── ui/                     # shadcn/ui components
-├── .github/workflows/
-│   └── web.yml
 ├── AGENTS.md
 ├── pnpm-workspace.yaml
 ├── turbo.json
@@ -119,6 +117,15 @@ We deliberately did not build these things up front. Add each one only when you 
 **When to add:** when real designs exist and you need one source of truth for colors/spacing/typography across web and iOS.
 
 **How to add:** single JSON token source + [Style Dictionary](https://amzn.github.io/style-dictionary/) emitting TS (`apps/web`) and `Tokens.swift` (`apps/ios`). Add a `tools/swift-tokens/` script to the codegen pipeline.
+
+### CI
+
+**When to add:** when the repo has a remote (GitHub) and at least one other person is contributing, or when you want PR checks before merging.
+
+**How to add:**
+1. Create `.github/workflows/web.yml` on `ubuntu-latest`: checkout → `pnpm/action-setup@v4` → `actions/setup-node@v4` with `cache: pnpm` → `pnpm install --frozen-lockfile` → `pnpm turbo run lint typecheck build --filter=web...`. Pass a placeholder `NEXT_PUBLIC_CONVEX_URL` env to make build deterministic.
+2. When `apps/ios/` lands, add `.github/workflows/ios.yml` on `macos-14`: checkout → `xcodebuild -project apps/ios/Socal/Socal.xcodeproj test`. Do not reuse the Linux job's cache keys.
+3. Consider enabling Turborepo remote cache (Vercel) — works across OSes, but ensure iOS-only files aren't inputs to web tasks.
 
 ## Known constraints and gotchas (permanent record)
 

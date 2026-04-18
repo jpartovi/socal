@@ -147,8 +147,10 @@ pnpm typecheck                              # typecheck everything
 
 pnpm -F web dev                             # just the web app
 pnpm -F web build
-pnpm -F @socal/backend convex dev           # start Convex dev deployment (first run: login + create deployment)
-pnpm -F @socal/backend convex deploy        # deploy backend to prod
+pnpm -F @socal/backend dev                  # start Convex dev deployment (first run: login + create deployment)
+pnpm -F @socal/backend deploy               # deploy backend to prod
+# `pnpm -F <pkg> <name>` runs the npm script `<name>`, not a binary. To invoke
+# the convex CLI directly in the backend workspace, use `pnpm -F @socal/backend exec convex <args>`.
 ```
 
 ## First-time setup notes
@@ -157,7 +159,9 @@ On a fresh clone:
 
 ```bash
 pnpm install
-pnpm -F @socal/backend convex dev           # first run: logs you in + creates a dev deployment, writes NEXT_PUBLIC_CONVEX_URL into apps/web/.env.local
+pnpm -F @socal/backend dev                  # first run: logs you in + creates a dev deployment; writes CONVEX_DEPLOYMENT/CONVEX_URL/CONVEX_SITE_URL into packages/backend/.env.local
+# Then copy the URL into the web app's env so the client can find the deployment:
+echo "NEXT_PUBLIC_CONVEX_URL=$(grep '^CONVEX_URL=' packages/backend/.env.local | cut -d= -f2)" > apps/web/.env.local
 # in another terminal:
 pnpm -F web dev
 ```

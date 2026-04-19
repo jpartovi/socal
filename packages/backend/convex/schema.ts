@@ -140,4 +140,36 @@ export default defineSchema({
     .index("by_calendar", ["calendarId"])
     .index("by_calendar_and_event", ["calendarId", "googleEventId"])
     .index("by_calendar_and_start", ["calendarId", "start"]),
+
+  // Agent-authored event proposals awaiting user approval. Rows start
+  // `pending`; on accept/reject they're patched to the corresponding terminal
+  // status (not deleted) so a future "agent activity" view can render the
+  // history. Only `pending` rows are fed back into the calendar UI.
+  //
+  // Schema is single-purpose for now — every row is a create proposal. When
+  // update proposals arrive, promote this to a discriminated union via
+  // `v.union` with a `kind` field; both indexes below stay valid because
+  // `userId`/`calendarId`/`status`/`start` are common to every branch.
+  eventProposals: defineTable({
+    userId: v.id("users"),
+    calendarId: v.id("calendars"),
+    summary: v.string(),
+    description: v.optional(v.string()),
+    location: v.optional(v.string()),
+    start: v.number(),
+    end: v.number(),
+    allDay: v.boolean(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("accepted"),
+      v.literal("rejected"),
+    ),
+    proposedAt: v.number(),
+    respondedAt: v.optional(v.number()),
+    // Set when status transitions to "accepted" so a future audit/history
+    // view can link a proposal to the real event it became.
+    createdEventId: v.optional(v.id("events")),
+  })
+    .index("by_user_and_status", ["userId", "status"])
+    .index("by_calendar_and_start", ["calendarId", "start"]),
 });

@@ -11,6 +11,7 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { v } from "convex/values";
+import { api } from "./_generated/api";
 import { action } from "./_generated/server";
 import { buildSystemPrompt } from "./agentPrompts";
 import { makeCalendarTools } from "./agentTools";
@@ -30,10 +31,15 @@ export const run = action({
       tools: makeCalendarTools({ ctx, userId }),
     });
 
+    // Fetch user context so the prompt can say "helping <first name>" and,
+    // critically, resolve relative phrases like "tomorrow" in the user's
+    // own time zone rather than UTC.
+    const user = await ctx.runQuery(api.users.getById, { userId });
+
     const systemPrompt = buildSystemPrompt({
       nowIso: new Date().toISOString(),
-      // userTimeZone / userFirstName can be plumbed in later from
-      // ctx.runQuery on the users table once we want richer personalization.
+      userFirstName: user?.firstName,
+      userTimeZone: user?.timeZone,
     });
 
     const result = await agent.invoke(

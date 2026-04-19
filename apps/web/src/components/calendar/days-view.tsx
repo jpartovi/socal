@@ -28,7 +28,8 @@ import {
   shortTimeZoneLabel,
   startOfDay,
 } from "@/components/calendar/lib";
-import type { EventRow } from "@/components/calendar/types";
+import { ProposalItem } from "@/components/calendar/proposal-item";
+import type { EventRow, ProposalRow } from "@/components/calendar/types";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const HOUR_HEIGHT = 48; // px per hour in the grid
@@ -204,6 +205,7 @@ function layoutDay(rows: EventRow[], dayStart: Date): Positioned[] {
 
 export function DaysView({
   events,
+  proposals,
   anchor,
   numDays,
   onMoveEvent,
@@ -216,6 +218,7 @@ export function DaysView({
   onCreateDismiss,
 }: {
   events: EventRow[];
+  proposals: ProposalRow[];
   anchor: Date;
   numDays: number;
   onMoveEvent: (args: MoveEventArgs) => void;
@@ -271,6 +274,22 @@ export function DaysView({
     let cur = first;
     while (cur.getTime() <= last.getTime()) {
       const list = eventsByDay.get(cur.getTime());
+      if (list) list.push(row);
+      cur = addDays(cur, 1);
+    }
+  }
+
+  // Timed proposals per day — same bucketing as events. All-day proposals
+  // render in the AllDayRow (TODO: wire when we want all-day proposals in v2).
+  const proposalsByDay = new Map<number, ProposalRow[]>();
+  for (const day of days) proposalsByDay.set(day.getTime(), []);
+  for (const row of proposals) {
+    if (row.proposal.allDay) continue;
+    const first = startOfDay(new Date(row.proposal.start));
+    const last = startOfDay(new Date(row.proposal.end - 1));
+    let cur = first;
+    while (cur.getTime() <= last.getTime()) {
+      const list = proposalsByDay.get(cur.getTime());
       if (list) list.push(row);
       cur = addDays(cur, 1);
     }
@@ -464,6 +483,7 @@ export function DaysView({
             const workingLocations = rows.filter(
               (row) => !row.event.allDay && isWorkingLocation(row),
             );
+            const proposalRows = proposalsByDay.get(d.getTime()) ?? [];
             const draftForDay =
               draftEvent && sameDay(new Date(draftEvent.start), d)
                 ? draftEvent
@@ -475,6 +495,7 @@ export function DaysView({
                 dayIndex={idx}
                 positioned={positioned}
                 workingLocations={workingLocations}
+                proposals={proposalRows}
                 totalHeightPx={HOUR_HEIGHT * 24}
                 onCreateEvent={onCreateEvent}
                 createEventAppearance={createEventAppearance}
@@ -1098,6 +1119,7 @@ function DayColumn({
   dayIndex,
   positioned,
   workingLocations,
+  proposals,
   totalHeightPx,
   onCreateEvent,
   createEventAppearance,
@@ -1117,6 +1139,7 @@ function DayColumn({
   dayIndex: number;
   positioned: Positioned[];
   workingLocations: EventRow[];
+  proposals: ProposalRow[];
   totalHeightPx: number;
   onCreateEvent: ((args: CreateEventArgs) => void) | null;
   createEventAppearance: EventAppearance | null;
@@ -1488,6 +1511,37 @@ function DayColumn({
               )}
             </button>
           </EventPopover>
+        );
+      })}
+      {proposals.map((row) => {
+        const segment = clippedTimedSegment(
+          row.proposal.start,
+          row.proposal.end,
+          dayStartMs,
+          dayEndMs,
+        );
+        if (!segment) return null;
+        const topPx =
+          ((segment.startMs - dayStartMs) / 86400_000) * totalHeightPx;
+        const heightPx = Math.max(
+          ((segment.endMs - segment.startMs) / 86400_000) * totalHeightPx,
+          44,
+        );
+        return (
+          <div
+            key={`${dayStart.getTime()}-proposal-${row.proposal._id}`}
+            className="absolute left-1 right-1"
+            style={{
+              top: `${topPx}px`,
+              height: `${heightPx}px`,
+              // Above events (which have no explicit z-index) but below the
+              // active drag ghost (z-20) so a drag-in-flight still reads
+              // clearly on top.
+              zIndex: 18,
+            }}
+          >
+            <ProposalItem row={row} variant="day" />
+          </div>
         );
       })}
       {drag !== null &&

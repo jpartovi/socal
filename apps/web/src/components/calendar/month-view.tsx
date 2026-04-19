@@ -15,16 +15,23 @@ import {
   startOfMonth,
   startOfWeek,
 } from "@/components/calendar/lib";
-import type { EventRow } from "@/components/calendar/types";
+import { ProposalItem } from "@/components/calendar/proposal-item";
+import type { EventRow, ProposalRow } from "@/components/calendar/types";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MAX_PILLS_PER_CELL = 3;
 
+type CellItem =
+  | { kind: "event"; start: number; row: EventRow }
+  | { kind: "proposal"; start: number; row: ProposalRow };
+
 export function MonthView({
   events,
+  proposals,
   anchor,
 }: {
   events: EventRow[];
+  proposals: ProposalRow[];
   anchor: Date;
 }) {
   const monthStart = startOfMonth(anchor);
@@ -32,7 +39,7 @@ export function MonthView({
   const days: Date[] = [];
   for (let i = 0; i < 42; i++) days.push(addDays(gridStart, i));
 
-  const byDay = new Map<number, EventRow[]>();
+  const byDay = new Map<number, CellItem[]>();
   for (const row of events) {
     const first = startOfDay(new Date(row.event.start));
     const last = startOfDay(new Date(row.event.end - 1));
@@ -40,7 +47,19 @@ export function MonthView({
     while (cur.getTime() <= last.getTime()) {
       const key = cur.getTime();
       const list = byDay.get(key) ?? [];
-      list.push(row);
+      list.push({ kind: "event", start: row.event.start, row });
+      byDay.set(key, list);
+      cur = addDays(cur, 1);
+    }
+  }
+  for (const row of proposals) {
+    const first = startOfDay(new Date(row.proposal.start));
+    const last = startOfDay(new Date(row.proposal.end - 1));
+    let cur = first;
+    while (cur.getTime() <= last.getTime()) {
+      const key = cur.getTime();
+      const list = byDay.get(key) ?? [];
+      list.push({ kind: "proposal", start: row.proposal.start, row });
       byDay.set(key, list);
       cur = addDays(cur, 1);
     }
@@ -62,10 +81,11 @@ export function MonthView({
         {days.map((d) => {
           const inMonth = d.getMonth() === anchor.getMonth();
           const today = sameDay(d, new Date());
-          const rows = byDay.get(d.getTime()) ?? [];
-          rows.sort((a, b) => a.event.start - b.event.start);
-          const visible = rows.slice(0, MAX_PILLS_PER_CELL);
-          const hidden = rows.length - visible.length;
+          const items = (byDay.get(d.getTime()) ?? [])
+            .slice()
+            .sort((a, b) => a.start - b.start);
+          const visible = items.slice(0, MAX_PILLS_PER_CELL);
+          const hidden = items.length - visible.length;
           return (
             <div
               key={d.getTime()}
@@ -84,12 +104,20 @@ export function MonthView({
               >
                 {d.getDate()}
               </span>
-              {visible.map((row) => (
-                <MonthPill
-                  key={`${d.getTime()}-${row.event._id}`}
-                  row={row}
-                />
-              ))}
+              {visible.map((item) =>
+                item.kind === "event" ? (
+                  <MonthPill
+                    key={`${d.getTime()}-event-${item.row.event._id}`}
+                    row={item.row}
+                  />
+                ) : (
+                  <ProposalItem
+                    key={`${d.getTime()}-proposal-${item.row.proposal._id}`}
+                    row={item.row}
+                    variant="month"
+                  />
+                ),
+              )}
               {hidden > 0 && (
                 <span className="px-1 text-[10px] text-muted-foreground">
                   +{hidden} more

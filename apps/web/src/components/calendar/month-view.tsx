@@ -2,6 +2,11 @@
 
 import { EventPopover } from "@/components/calendar/event-popover";
 import {
+  eventKindLabel,
+  isTask,
+  isWorkingLocation,
+} from "@/components/calendar/event-kind";
+import {
   addDays,
   formatTime,
   sameDay,
@@ -99,19 +104,29 @@ export function MonthView({
 
 function MonthPill({ row }: { row: EventRow }) {
   const { event, calendar } = row;
+  const task = isTask(row);
+  const workingLocation = isWorkingLocation(row);
   if (event.allDay) {
     return (
       <EventPopover row={row}>
         <button
           type="button"
-          className="truncate rounded px-1 py-0.5 text-left text-[10px] leading-tight outline-none transition hover:brightness-95"
+          className={`flex items-center gap-1 truncate rounded px-1 py-0.5 text-left text-[10px] leading-tight outline-none transition hover:brightness-95 ${
+            workingLocation ? "border-l-4 bg-transparent" : ""
+          }`}
           style={{
-            backgroundColor: calendar.backgroundColor,
-            color: calendar.foregroundColor,
+            backgroundColor: workingLocation
+              ? "transparent"
+              : calendar.backgroundColor,
+            borderColor: workingLocation ? calendar.backgroundColor : undefined,
+            color: workingLocation
+              ? calendar.backgroundColor
+              : calendar.foregroundColor,
           }}
-          title={event.summary}
+          title={`${eventKindLabel(row)}: ${event.summary}`}
         >
-          {event.summary}
+          {workingLocation && <BuildingIcon className="size-3 shrink-0" />}
+          <span className="truncate">{event.summary}</span>
         </button>
       </EventPopover>
     );
@@ -120,19 +135,53 @@ function MonthPill({ row }: { row: EventRow }) {
     <EventPopover row={row}>
       <button
         type="button"
-        className="flex items-center gap-1 truncate px-1 text-left text-[10px] leading-tight outline-none hover:bg-muted"
-        title={event.summary}
+        className="flex items-center gap-1 truncate rounded px-1 text-left text-[10px] leading-tight outline-none hover:bg-muted"
+        style={{ color: task ? calendar.backgroundColor : undefined }}
+        title={`${eventKindLabel(row)}: ${event.summary}`}
       >
-        <span
-          aria-hidden
-          className="h-2 w-2 shrink-0 rounded-full"
-          style={{ backgroundColor: calendar.backgroundColor }}
-        />
-        <span className="shrink-0 text-muted-foreground">
-          {formatTime(event.start)}
-        </span>
+        {task ? (
+          <span
+            aria-hidden
+            className="size-2.5 shrink-0 rounded-[3px] border-2 bg-background"
+            style={{ borderColor: calendar.backgroundColor }}
+          />
+        ) : (
+          <>
+            <span
+              aria-hidden
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: calendar.backgroundColor }}
+            />
+            <span className="shrink-0 text-muted-foreground">
+              {formatTime(event.start)}
+            </span>
+          </>
+        )}
         <span className="truncate">{event.summary}</span>
       </button>
     </EventPopover>
+  );
+}
+
+function BuildingIcon({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 13.5V3.5h8v10" />
+      <path d="M6.5 13.5v-3h3v3" />
+      <path d="M6.5 6h.01" />
+      <path d="M9.5 6h.01" />
+      <path d="M6.5 8.25h.01" />
+      <path d="M9.5 8.25h.01" />
+      <path d="M3 13.5h10" />
+    </svg>
   );
 }

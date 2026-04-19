@@ -112,6 +112,9 @@ export default defineSchema({
     ),
     htmlLink: v.optional(v.string()),
     updatedAt: v.number(),
+    eventKind: v.optional(
+      v.union(v.literal("event"), v.literal("workingLocation"), v.literal("task")),
+    ),
     // Attendees as reported by Google Calendar. Photos are resolved at query
     // time by joining `email` against googleAccounts → users.
     attendees: v.optional(

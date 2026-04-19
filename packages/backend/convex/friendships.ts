@@ -40,6 +40,7 @@ const friendUserSummary = v.object({
   firstName: v.string(),
   lastName: v.string(),
   phoneNumber: v.string(),
+  photoUrl: v.union(v.string(), v.null()),
 });
 
 const connectionEntry = v.object({
@@ -169,23 +170,37 @@ export const listConnections = query({
       }
     }
 
-    const toSummary = (e: {
+    const toSummary = async (e: {
       friendshipId: Id<"friendships">;
       user: Doc<"users">;
-    }) => ({
-      friendshipId: e.friendshipId,
-      user: {
-        _id: e.user._id,
-        firstName: e.user.firstName,
-        lastName: e.user.lastName,
-        phoneNumber: e.user.phoneNumber,
-      },
-    });
+    }) => {
+      let photoUrl = e.user.photoStorageId
+        ? await ctx.storage.getUrl(e.user.photoStorageId)
+        : null;
+      if (photoUrl === null) {
+        const googleAccount = await ctx.db
+          .query("googleAccounts")
+          .withIndex("by_user", (q) => q.eq("userId", e.user._id))
+          .filter((q) => q.neq(q.field("pictureUrl"), undefined))
+          .first();
+        photoUrl = googleAccount?.pictureUrl ?? null;
+      }
+      return {
+        friendshipId: e.friendshipId,
+        user: {
+          _id: e.user._id,
+          firstName: e.user.firstName,
+          lastName: e.user.lastName,
+          phoneNumber: e.user.phoneNumber,
+          photoUrl,
+        },
+      };
+    };
 
     return {
-      friends: friends.map(toSummary),
-      incoming: incoming.map(toSummary),
-      outgoing: outgoing.map(toSummary),
+      friends: await Promise.all(friends.map(toSummary)),
+      incoming: await Promise.all(incoming.map(toSummary)),
+      outgoing: await Promise.all(outgoing.map(toSummary)),
     };
   },
 });
@@ -315,12 +330,26 @@ export const removeById = mutation({
   },
 });
 
+// Returns a discriminated status so the caller can distinguish "no user
+// with that phone yet" (prompt for SMS invite) from real errors.
 export const sendRequestByPhone = mutation({
   args: {
     fromUserId: v.id("users"),
     phoneNumber: v.string(),
   },
-  returns: v.id("friendships"),
+  returns: v.union(
+    v.object({
+      status: v.literal("sent"),
+      friendshipId: v.id("friendships"),
+    }),
+    v.object({
+      status: v.literal("accepted"),
+      friendshipId: v.id("friendships"),
+    }),
+    v.object({ status: v.literal("already_pending") }),
+    v.object({ status: v.literal("already_friends") }),
+    v.object({ status: v.literal("no_user") }),
+  ),
   handler: async (ctx, args) => {
     const trimmed = args.phoneNumber.trim();
     if (trimmed.length === 0) {
@@ -340,30 +369,34 @@ export const sendRequestByPhone = mutation({
       .withIndex("by_phone_number", (q) => q.eq("phoneNumber", trimmed))
       .unique();
     if (target === null) {
-      throw new ConvexError("No user exists with that phone number");
+      return { status: "no_user" as const };
     }
 
     const existing = await findFriendship(ctx, args.fromUserId, target._id);
     if (existing !== null) {
       if (existing.status === "accepted") {
-        throw new ConvexError("You are already friends");
+        return { status: "already_friends" as const };
       }
       if (existing.requesterId === args.fromUserId) {
-        throw new ConvexError("A friend request is already pending");
+        return { status: "already_pending" as const };
       }
       await ctx.db.patch(existing._id, {
         status: "accepted",
         acceptedAt: Date.now(),
       });
-      return existing._id;
+      return {
+        status: "accepted" as const,
+        friendshipId: existing._id,
+      };
     }
 
     const { userA, userB } = orderPair(args.fromUserId, target._id);
-    return await ctx.db.insert("friendships", {
+    const friendshipId = await ctx.db.insert("friendships", {
       userA,
       userB,
       requesterId: args.fromUserId,
       status: "pending",
     });
+    return { status: "sent" as const, friendshipId };
   },
 });

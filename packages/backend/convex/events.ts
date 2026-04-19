@@ -15,6 +15,12 @@ import { getValidAccessToken } from "./googleTokens";
 const INITIAL_PAST_DAYS = 14;
 const INITIAL_FUTURE_DAYS = 90;
 
+// Upper bound on the length of any single calendar event. Used by
+// listForUserInRange to keep the "does this event overlap the window?"
+// lookup bounded to an indexed range query. Events longer than this will
+// be missed by overlap checks; bump if that ever becomes a real concern.
+const MAX_EVENT_SPAN_MS = 366 * 24 * 60 * 60 * 1000;
+
 const eventStatus = v.union(
   v.literal("confirmed"),
   v.literal("tentative"),
@@ -143,17 +149,26 @@ export const listForUserInRange = query({
         .collect();
       for (const cal of cals) {
         if (!cal.isEnabled) continue;
+        // True overlap semantics: return events where [event.start, event.end)
+        // intersects [args.start, args.end) — i.e. start < windowEnd AND
+        // end > windowStart. Convex indexes only support a range on the last
+        // key, so we can't express both constraints in a single index lookup.
+        // Instead we bound the start range by MAX_EVENT_SPAN_MS (events
+        // longer than a year are exceedingly rare in a calendar app) and
+        // filter by end > windowStart in memory. Bump the constant if a
+        // multi-year event ever gets missed.
         const evts = await ctx.db
           .query("events")
           .withIndex("by_calendar_and_start", (q) =>
             q
               .eq("calendarId", cal._id)
-              .gte("start", args.start)
+              .gte("start", args.start - MAX_EVENT_SPAN_MS)
               .lt("start", args.end),
           )
           .collect();
         for (const ev of evts) {
           if (ev.status === "cancelled") continue;
+          if (ev.end <= args.start) continue;
           rawEvents.push({
             event: ev,
             calendar: {

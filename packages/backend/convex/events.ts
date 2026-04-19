@@ -20,6 +20,12 @@ const eventStatus = v.union(
   v.literal("cancelled"),
 );
 
+const eventKind = v.union(
+  v.literal("event"),
+  v.literal("workingLocation"),
+  v.literal("task"),
+);
+
 const attendeeResponseStatus = v.union(
   v.literal("needsAction"),
   v.literal("declined"),
@@ -59,6 +65,7 @@ const eventDoc = v.object({
   status: eventStatus,
   htmlLink: v.optional(v.string()),
   updatedAt: v.number(),
+  eventKind: v.optional(eventKind),
   // Enriched at query time with photo + socalUserId joined from googleAccounts.
   attendees: v.optional(v.array(resolvedAttendee)),
 });
@@ -245,6 +252,7 @@ type GoogleEvent = {
   htmlLink?: string;
   updated?: string;
   attendees?: GoogleAttendee[];
+  eventType?: string;
 };
 
 type EventsListResponse = {
@@ -272,6 +280,7 @@ type NormalizedEvent = {
   status: "confirmed" | "tentative" | "cancelled";
   htmlLink?: string;
   updatedAt: number;
+  eventKind: "event" | "workingLocation" | "task";
   attendees?: NormalizedAttendee[];
 };
 
@@ -295,7 +304,10 @@ function parseTime(t: GoogleEventTime | undefined): {
   return { ms: 0, allDay: false };
 }
 
-function normalize(ev: GoogleEvent): EventChange | null {
+function normalize(
+  ev: GoogleEvent,
+  meta: { googleCalendarId: string; calendarSummary: string },
+): EventChange | null {
   if (!ev.id) return null;
   if (ev.status === "cancelled" && !ev.summary && !ev.start && !ev.end) {
     return { kind: "delete", googleEventId: ev.id };
@@ -328,9 +340,28 @@ function normalize(ev: GoogleEvent): EventChange | null {
       status: ev.status ?? "confirmed",
       htmlLink: ev.htmlLink,
       updatedAt: ev.updated ? new Date(ev.updated).getTime() : Date.now(),
+      eventKind: normalizeEventKind(ev, meta),
       attendees: attendees && attendees.length > 0 ? attendees : undefined,
     },
   };
+}
+
+function normalizeEventKind(
+  ev: GoogleEvent,
+  meta: { googleCalendarId: string; calendarSummary: string },
+): "event" | "workingLocation" | "task" {
+  if (ev.eventType === "workingLocation") return "workingLocation";
+  const calendarLabel = `${meta.googleCalendarId} ${meta.calendarSummary}`
+    .toLowerCase()
+    .trim();
+  if (
+    meta.calendarSummary.toLowerCase() === "tasks" ||
+    calendarLabel.includes("#tasks") ||
+    calendarLabel.includes(" tasks")
+  ) {
+    return "task";
+  }
+  return "event";
 }
 
 export const syncCalendar = action({
@@ -392,7 +423,10 @@ export const syncCalendar = action({
       const body = (await res.json()) as EventsListResponse;
       if (body.items) {
         for (const ev of body.items) {
-          const change = normalize(ev);
+          const change = normalize(ev, {
+            googleCalendarId: meta.googleCalendarId,
+            calendarSummary: meta.summary,
+          });
           if (change) changes.push(change);
         }
       }
@@ -421,6 +455,15 @@ export const syncUser = action({
     });
     for (const c of cals) {
       try {
+        const needsKindBackfill = await ctx.runQuery(
+          internal.events._calendarNeedsKindBackfill,
+          { calendarId: c._id },
+        );
+        if (needsKindBackfill) {
+          await ctx.runMutation(internal.events._resetSync, {
+            calendarId: c._id,
+          });
+        }
         await ctx.runAction(api.events.syncCalendar, { calendarId: c._id });
       } catch (err) {
         // Isolate per-calendar failures so one bad calendar doesn't stop
@@ -869,6 +912,7 @@ export const _insertLocalEvent = internalMutation({
       end: args.end,
       allDay: args.allDay,
       status: "confirmed",
+      eventKind: "event",
       htmlLink: args.htmlLink,
       updatedAt: Date.now(),
     });
@@ -893,6 +937,7 @@ export const _getCalendarForSync = internalQuery({
     v.object({
       googleAccountId: v.id("googleAccounts"),
       googleCalendarId: v.string(),
+      summary: v.string(),
       syncToken: v.optional(v.string()),
     }),
     v.null(),
@@ -903,6 +948,7 @@ export const _getCalendarForSync = internalQuery({
     return {
       googleAccountId: cal.googleAccountId,
       googleCalendarId: cal.googleCalendarId,
+      summary: cal.summary,
       syncToken: cal.syncToken,
     };
   },
@@ -926,6 +972,7 @@ export const _applyChanges = internalMutation({
             status: eventStatus,
             htmlLink: v.optional(v.string()),
             updatedAt: v.number(),
+            eventKind,
             attendees: v.optional(v.array(rawAttendee)),
           }),
         }),
@@ -983,5 +1030,17 @@ export const _resetSync = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.patch(args.calendarId, { syncToken: undefined });
     return null;
+  },
+});
+
+export const _calendarNeedsKindBackfill = internalQuery({
+  args: { calendarId: v.id("calendars") },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const events = await ctx.db
+      .query("events")
+      .withIndex("by_calendar", (q) => q.eq("calendarId", args.calendarId))
+      .take(50);
+    return events.some((event) => event.eventKind === undefined);
   },
 });

@@ -24,10 +24,12 @@ export function EventPopover({
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  console.log("[EventPopover] render", { open, editing, eventId: row.event._id });
   return (
     <Popover
       open={open}
       onOpenChange={(o) => {
+        console.log("[EventPopover] onOpenChange", { to: o, editing });
         setOpen(o);
         if (!o) setEditing(false);
       }}
@@ -53,7 +55,10 @@ export function EventPopover({
         ) : (
           <EventPopoverBody
             row={row}
-            onEdit={() => setEditing(true)}
+            onEdit={() => {
+              console.log("[EventPopover] onEdit clicked");
+              setEditing(true);
+            }}
             onDeleted={() => setOpen(false)}
             onClose={() => setOpen(false)}
           />

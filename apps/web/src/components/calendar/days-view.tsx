@@ -5,6 +5,11 @@ import { useEffect, useRef, useState } from "react";
 
 import { EventPopover } from "@/components/calendar/event-popover";
 import {
+  eventKindLabel,
+  isTask,
+  isWorkingLocation,
+} from "@/components/calendar/event-kind";
+import {
   addDays,
   formatTime,
   sameDay,
@@ -36,8 +41,12 @@ type DragState = {
   mode: "move" | "resize";
   originalStart: number;
   originalEnd: number;
+  originDayIndex: number;
+  pointerStartX: number;
   pointerStartY: number;
+  pointerCurrentX: number;
   deltaMs: number;
+  dayDiff: number;
   active: boolean;
   pointerId: number;
 };
@@ -50,6 +59,7 @@ type CreateDragState = {
 };
 
 function isWritable(row: EventRow): boolean {
+  if (isTask(row) || isWorkingLocation(row)) return false;
   const r = row.calendar.accessRole;
   return (r === "owner" || r === "writer") && !row.event.allDay;
 }
@@ -174,11 +184,39 @@ export function DaysView({
     days.push(addDays(startOfDay(anchor), i));
   }
 
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const suppressClickRef = useRef<Set<string>>(new Set());
+  // Optimistic override for an in-flight move. We immediately pretend the
+  // event is at its new start/end so the user sees it land the instant they
+  // release — no waiting for the Convex round-trip. Cleared once the real
+  // `events` prop reflects the move (or after a safety timeout).
+  const [pendingMove, setPendingMove] = useState<{
+    eventId: string;
+    expectedStart: number;
+    expectedEnd: number;
+  } | null>(null);
+
+  const effectiveEvents =
+    pendingMove === null
+      ? events
+      : events.map((r) => {
+          if ((r.event._id as string) !== pendingMove.eventId) return r;
+          return {
+            ...r,
+            event: {
+              ...r.event,
+              start: pendingMove.expectedStart,
+              end: pendingMove.expectedEnd,
+            },
+          };
+        });
+
   // Bucket timed events only; all-day events render as spanning segments in
   // AllDayRow and must not appear in any day column.
   const eventsByDay = new Map<number, EventRow[]>();
   for (const day of days) eventsByDay.set(day.getTime(), []);
-  for (const row of events) {
+  for (const row of effectiveEvents) {
     if (row.event.allDay) continue;
     const first = startOfDay(new Date(row.event.start));
     const last = startOfDay(new Date(row.event.end - 1));
@@ -194,6 +232,147 @@ export function DaysView({
   const columnsStyle: React.CSSProperties = {
     gridTemplateColumns: `48px repeat(${numDays}, 1fr)`,
   };
+  const hourGridRef = useRef<HTMLDivElement | null>(null);
+
+  const draggedRow =
+    drag !== null
+      ? effectiveEvents.find((r) => (r.event._id as string) === drag.eventId) ??
+        null
+      : null;
+
+  useEffect(() => {
+    if (!pendingMove) return;
+    const current = events.find(
+      (r) => (r.event._id as string) === pendingMove.eventId,
+    );
+    if (
+      current &&
+      current.event.start === pendingMove.expectedStart &&
+      current.event.end === pendingMove.expectedEnd
+    ) {
+      setPendingMove(null);
+    }
+  }, [events, pendingMove]);
+
+  // Safety: if the mutation never lands (e.g. error), drop the override after
+  // a grace period so the UI doesn't show a stale optimistic position forever.
+  useEffect(() => {
+    if (!pendingMove) return;
+    const id = setTimeout(() => setPendingMove(null), 3000);
+    return () => clearTimeout(id);
+  }, [pendingMove]);
+
+  function computeDayDiff(pointerX: number, originDayIndex: number): number {
+    const rect = hourGridRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    const colWidth = (rect.width - 48) / numDays;
+    if (colWidth <= 0) return 0;
+    const x = pointerX - (rect.left + 48);
+    const target = Math.max(
+      0,
+      Math.min(numDays - 1, Math.floor(x / colWidth)),
+    );
+    return target - originDayIndex;
+  }
+
+  function beginDrag(
+    e: React.PointerEvent<HTMLElement>,
+    row: EventRow,
+    mode: "move" | "resize",
+    originDayIndex: number,
+  ) {
+    const state: DragState = {
+      eventId: row.event._id as string,
+      mode,
+      originalStart: row.event.start,
+      originalEnd: row.event.end,
+      originDayIndex,
+      pointerStartX: e.clientX,
+      pointerStartY: e.clientY,
+      pointerCurrentX: e.clientX,
+      deltaMs: 0,
+      dayDiff: 0,
+      active: false,
+      pointerId: e.pointerId,
+    };
+    dragRef.current = state;
+    setDrag(state);
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+  }
+
+  function moveDrag(e: React.PointerEvent<HTMLElement>) {
+    const s = dragRef.current;
+    if (!s || s.pointerId !== e.pointerId) return;
+    const dx = e.clientX - s.pointerStartX;
+    const dy = e.clientY - s.pointerStartY;
+    if (
+      !s.active &&
+      Math.abs(dy) < DRAG_THRESHOLD_PX &&
+      Math.abs(dx) < DRAG_THRESHOLD_PX
+    ) {
+      return;
+    }
+    const raw = (dy / HOUR_HEIGHT) * 3_600_000;
+    const snapped = Math.round(raw / SNAP_MS) * SNAP_MS;
+    const dayDiff =
+      s.mode === "move" ? computeDayDiff(e.clientX, s.originDayIndex) : 0;
+    if (
+      !s.active ||
+      snapped !== s.deltaMs ||
+      dayDiff !== s.dayDiff ||
+      e.clientX !== s.pointerCurrentX
+    ) {
+      const next: DragState = {
+        ...s,
+        active: true,
+        deltaMs: snapped,
+        dayDiff,
+        pointerCurrentX: e.clientX,
+      };
+      dragRef.current = next;
+      setDrag(next);
+    }
+  }
+
+  function endDrag(e: React.PointerEvent<HTMLElement>) {
+    const s = dragRef.current;
+    if (!s || s.pointerId !== e.pointerId) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+    dragRef.current = null;
+    setDrag(null);
+    if (!s.active || (s.deltaMs === 0 && s.dayDiff === 0)) return;
+    suppressClickRef.current.add(s.eventId);
+    let newStart = s.originalStart;
+    let newEnd = s.originalEnd;
+    if (s.mode === "move") {
+      // Use calendar-day deltas (DST-safe) rather than 24h * dayDiff.
+      const dayShiftMs =
+        days[s.originDayIndex + s.dayDiff].getTime() -
+        days[s.originDayIndex].getTime();
+      const shift = s.deltaMs + dayShiftMs;
+      newStart = s.originalStart + shift;
+      newEnd = s.originalEnd + shift;
+    } else {
+      newEnd = Math.max(
+        s.originalStart + MIN_EVENT_MS,
+        s.originalEnd + s.deltaMs,
+      );
+    }
+    setPendingMove({
+      eventId: s.eventId,
+      expectedStart: newStart,
+      expectedEnd: newEnd,
+    });
+    onMoveEvent({
+      eventId: s.eventId as Id<"events">,
+      start: newStart,
+      end: newEnd,
+    });
+  }
 
   // Unified scroll: header and all-day row are sticky inside the same
   // scrolling container as the hour grid, so every grid shares the same inner
@@ -219,19 +398,29 @@ export function DaysView({
             columnsStyle={columnsStyle}
           />
         </div>
-        <div className="relative grid" style={columnsStyle}>
+        <div
+          ref={hourGridRef}
+          className="relative grid"
+          style={columnsStyle}
+        >
           <HourLabels />
-          {days.map((d) => {
+          {days.map((d, idx) => {
             const rows = eventsByDay.get(d.getTime()) ?? [];
             const positioned = layoutDay(rows, d);
             return (
               <DayColumn
                 key={d.getTime()}
                 dayStart={d}
+                dayIndex={idx}
                 positioned={positioned}
                 totalHeightPx={HOUR_HEIGHT * 24}
-                onMoveEvent={onMoveEvent}
                 onCreateEvent={onCreateEvent}
+                drag={drag}
+                draggedRow={draggedRow}
+                suppressClickRef={suppressClickRef}
+                onEventPointerDown={beginDrag}
+                onEventPointerMove={moveDrag}
+                onEventPointerUp={endDrag}
               />
             );
           })}
@@ -369,15 +558,27 @@ function AllDayRow({
         >
           <button
             type="button"
-            className="mx-0.5 my-0.5 flex items-center overflow-hidden rounded px-1.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2"
+            className={`mx-0.5 my-0.5 flex items-center overflow-hidden rounded px-1.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2 ${
+              isWorkingLocation(s.row) ? "border bg-transparent" : ""
+            }`}
             style={{
               gridColumn: `${2 + s.startIdx} / ${3 + s.endIdx}`,
               gridRow: `${s.lane + 1}`,
-              backgroundColor: s.row.calendar.backgroundColor,
-              color: s.row.calendar.foregroundColor,
+              backgroundColor: isWorkingLocation(s.row)
+                ? "transparent"
+                : s.row.calendar.backgroundColor,
+              borderColor: isWorkingLocation(s.row)
+                ? s.row.calendar.backgroundColor
+                : undefined,
+              color: isWorkingLocation(s.row)
+                ? s.row.calendar.backgroundColor
+                : s.row.calendar.foregroundColor,
             }}
             title={s.row.event.summary}
           >
+            {isWorkingLocation(s.row) && (
+              <BuildingIcon className="mr-1 size-3 shrink-0" />
+            )}
             <span className="truncate">{s.row.event.summary}</span>
           </button>
         </EventPopover>
@@ -410,23 +611,37 @@ function formatHourLabel(h: number): string {
 
 function DayColumn({
   dayStart,
+  dayIndex,
   positioned,
   totalHeightPx,
-  onMoveEvent,
   onCreateEvent,
+  drag,
+  draggedRow,
+  suppressClickRef,
+  onEventPointerDown,
+  onEventPointerMove,
+  onEventPointerUp,
 }: {
   dayStart: Date;
+  dayIndex: number;
   positioned: Positioned[];
   totalHeightPx: number;
-  onMoveEvent: (args: MoveEventArgs) => void;
   onCreateEvent: ((args: CreateEventArgs) => void) | null;
+  drag: DragState | null;
+  draggedRow: EventRow | null;
+  suppressClickRef: React.MutableRefObject<Set<string>>;
+  onEventPointerDown: (
+    e: React.PointerEvent<HTMLElement>,
+    row: EventRow,
+    mode: "move" | "resize",
+    originDayIndex: number,
+  ) => void;
+  onEventPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
+  onEventPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
 }) {
   const isToday = sameDay(dayStart, new Date());
   const dayStartMs = dayStart.getTime();
   const dayEndMs = dayStartMs + 86400_000;
-  const [drag, setDrag] = useState<DragState | null>(null);
-  const dragRef = useRef<DragState | null>(null);
-  const suppressClickRef = useRef<Set<string>>(new Set());
   const columnRef = useRef<HTMLDivElement | null>(null);
   const [createDrag, setCreateDrag] = useState<CreateDragState | null>(null);
   const createDragRef = useRef<CreateDragState | null>(null);
@@ -497,72 +712,6 @@ function DayColumn({
     return row.event.start >= dayStartMs && row.event.end <= dayEndMs;
   }
 
-  function snapDelta(dy: number): number {
-    const raw = (dy / HOUR_HEIGHT) * 3_600_000;
-    return Math.round(raw / SNAP_MS) * SNAP_MS;
-  }
-
-  function begin(
-    e: React.PointerEvent<HTMLElement>,
-    row: EventRow,
-    mode: "move" | "resize",
-  ) {
-    if (!canDrag(row)) return;
-    const state: DragState = {
-      eventId: row.event._id as string,
-      mode,
-      originalStart: row.event.start,
-      originalEnd: row.event.end,
-      pointerStartY: e.clientY,
-      deltaMs: 0,
-      active: false,
-      pointerId: e.pointerId,
-    };
-    dragRef.current = state;
-    setDrag(state);
-    try {
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    } catch {}
-  }
-
-  function move(e: React.PointerEvent<HTMLElement>) {
-    const s = dragRef.current;
-    if (!s || s.pointerId !== e.pointerId) return;
-    const dy = e.clientY - s.pointerStartY;
-    if (!s.active && Math.abs(dy) < DRAG_THRESHOLD_PX) return;
-    const snapped = snapDelta(dy);
-    if (!s.active || snapped !== s.deltaMs) {
-      const next: DragState = { ...s, active: true, deltaMs: snapped };
-      dragRef.current = next;
-      setDrag(next);
-    }
-  }
-
-  function end(e: React.PointerEvent<HTMLElement>) {
-    const s = dragRef.current;
-    if (!s || s.pointerId !== e.pointerId) return;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-    dragRef.current = null;
-    setDrag(null);
-    if (!s.active || s.deltaMs === 0) return;
-    suppressClickRef.current.add(s.eventId);
-    let newStart = s.originalStart;
-    let newEnd = s.originalEnd;
-    if (s.mode === "move") {
-      newStart = s.originalStart + s.deltaMs;
-      newEnd = s.originalEnd + s.deltaMs;
-    } else {
-      newEnd = Math.max(s.originalStart + MIN_EVENT_MS, s.originalEnd + s.deltaMs);
-    }
-    onMoveEvent({
-      eventId: s.eventId as Id<"events">,
-      start: newStart,
-      end: newEnd,
-    });
-  }
-
   const createPreview = (() => {
     if (!createDrag?.active) return null;
     const aMs = snapMsFromOffsetY(createDrag.pointerStartY);
@@ -611,24 +760,21 @@ function DayColumn({
       {positioned.map((p) => {
         const widthPct = (p.span / p.lanes) * 100;
         const leftPct = (p.lane / p.lanes) * 100;
-        const isDragging =
-          drag?.active && drag.eventId === (p.row.event._id as string);
-        let topMs = p.startMs;
-        let durationMs = p.endMs - p.startMs;
-        if (isDragging && drag) {
-          if (drag.mode === "move") {
-            topMs = p.startMs + drag.deltaMs;
-          } else {
-            durationMs = Math.max(MIN_EVENT_MS, durationMs + drag.deltaMs);
-          }
-        }
-        const topPx = ((topMs - dayStartMs) / 86400_000) * totalHeightPx;
+        const isDraggingMe =
+          drag !== null && drag.eventId === (p.row.event._id as string);
+        // Hide this event while it's being actively dragged — the ghost
+        // (rendered below, possibly in a different day column) takes over.
+        // We keep the button mounted so pointer capture stays alive.
+        const hideForDrag = isDraggingMe && drag.active;
+        const topPx = ((p.startMs - dayStartMs) / 86400_000) * totalHeightPx;
         const heightPx = Math.max(
-          (durationMs / 86400_000) * totalHeightPx,
+          ((p.endMs - p.startMs) / 86400_000) * totalHeightPx,
           14,
         );
         const showStackedTime = heightPx >= 32;
         const showInlineTime = !showStackedTime && heightPx >= 20;
+        const task = isTask(p.row);
+        const workingLocation = isWorkingLocation(p.row);
         const writable = canDrag(p.row);
         const showResizeHandle = writable && heightPx >= 24;
         const eventIdStr = p.row.event._id as string;
@@ -654,42 +800,66 @@ function DayColumn({
                 // Stop the column-level drag-create from starting too.
                 e.stopPropagation();
                 if (!writable) return;
-                begin(e, p.row, "move");
+                onEventPointerDown(e, p.row, "move", dayIndex);
               }}
-              onPointerMove={move}
-              onPointerUp={end}
-              onPointerCancel={end}
+              onPointerMove={onEventPointerMove}
+              onPointerUp={onEventPointerUp}
+              onPointerCancel={onEventPointerUp}
               onClickCapture={handleClickCapture}
-              className={`absolute flex flex-col items-start justify-start overflow-hidden rounded px-1 py-0.5 text-left text-[11px] leading-tight shadow-sm outline-none transition hover:brightness-95 focus-visible:ring-2 focus-visible:ring-offset-1 ${
+              className={`absolute flex items-start justify-start overflow-hidden rounded px-1 py-0.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2 focus-visible:ring-offset-1 ${
                 writable ? "cursor-grab active:cursor-grabbing" : ""
               } ${
-                isDragging ? "z-20 opacity-90 ring-2 ring-primary/60" : ""
+                task
+                  ? "gap-1 bg-transparent shadow-none"
+                  : workingLocation
+                    ? "gap-1 border-l-4 bg-transparent shadow-none"
+                    : "flex-col shadow-sm"
               }`}
               style={{
                 top: `${topPx}px`,
                 height: `${heightPx}px`,
                 left: `calc(${leftPct}% + 2px)`,
                 width: `calc(${widthPct}% - 4px)`,
-                backgroundColor: p.row.calendar.backgroundColor,
-                color: p.row.calendar.foregroundColor,
+                backgroundColor: task || workingLocation
+                    ? "transparent"
+                    : p.row.calendar.backgroundColor,
+                borderColor:
+                  workingLocation ? p.row.calendar.backgroundColor : undefined,
+                color:
+                  task || workingLocation
+                    ? p.row.calendar.backgroundColor
+                    : p.row.calendar.foregroundColor,
                 touchAction: writable ? "none" : undefined,
+                opacity: hideForDrag ? 0 : 1,
+                pointerEvents: hideForDrag ? "none" : undefined,
               }}
-              title={`${p.row.event.summary} · ${formatTime(p.row.event.start)}`}
+              title={`${eventKindLabel(p.row)}: ${p.row.event.summary} · ${formatTime(p.row.event.start)}`}
             >
-              <div className="w-full truncate font-medium">
-                {p.row.event.summary}
-                {showInlineTime && (
-                  <span className="font-normal opacity-80">
-                    {" · "}
+              {task && (
+                <TaskCheckbox
+                  className="mt-0.5 size-3 shrink-0"
+                  color={p.row.calendar.backgroundColor}
+                />
+              )}
+              {workingLocation && (
+                <BuildingIcon className="mt-0.5 size-3 shrink-0" />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="w-full truncate font-medium">
+                  {p.row.event.summary}
+                  {showInlineTime && !task && !workingLocation && (
+                    <span className="font-normal opacity-80">
+                      {" · "}
+                      {formatTime(p.row.event.start)}
+                    </span>
+                  )}
+                </div>
+                {showStackedTime && !task && !workingLocation && (
+                  <div className="w-full truncate opacity-80">
                     {formatTime(p.row.event.start)}
-                  </span>
+                  </div>
                 )}
               </div>
-              {showStackedTime && (
-                <div className="w-full truncate opacity-80">
-                  {formatTime(p.row.event.start)}
-                </div>
-              )}
               {showResizeHandle && (
                 <span
                   aria-hidden
@@ -697,11 +867,11 @@ function DayColumn({
                   onPointerDown={(e) => {
                     if (e.button !== 0) return;
                     e.stopPropagation();
-                    begin(e, p.row, "resize");
+                    onEventPointerDown(e, p.row, "resize", dayIndex);
                   }}
-                  onPointerMove={move}
-                  onPointerUp={end}
-                  onPointerCancel={end}
+                  onPointerMove={onEventPointerMove}
+                  onPointerUp={onEventPointerUp}
+                  onPointerCancel={onEventPointerUp}
                   onClick={(e) => e.stopPropagation()}
                   className="absolute inset-x-0 bottom-0 h-1.5 cursor-ns-resize"
                 />
@@ -710,7 +880,86 @@ function DayColumn({
           </EventPopover>
         );
       })}
+      {drag !== null &&
+        drag.active &&
+        draggedRow !== null &&
+        drag.originDayIndex + drag.dayDiff === dayIndex && (
+          <DragGhost
+            drag={drag}
+            row={draggedRow}
+            dayStartMs={dayStartMs}
+            totalHeightPx={totalHeightPx}
+          />
+        )}
       {isToday && <NowIndicator dayStart={dayStart} totalHeightPx={totalHeightPx} />}
+    </div>
+  );
+}
+
+function DragGhost({
+  drag,
+  row,
+  dayStartMs,
+  totalHeightPx,
+}: {
+  drag: DragState;
+  row: EventRow;
+  dayStartMs: number;
+  totalHeightPx: number;
+}) {
+  // Compute the ghost's offset within THIS (target) column. For move mode the
+  // origin day's start is approximately targetDayStart - dayDiff*86400_000, so
+  // the time-of-day inside origin is (originalStart - dayStartMs) + dayDiff*86400_000.
+  // Adding deltaMs shifts it vertically within the target column.
+  let startInDayMs: number;
+  let durationMs: number;
+  let displayStart: number;
+  if (drag.mode === "move") {
+    startInDayMs =
+      drag.originalStart -
+      dayStartMs +
+      drag.dayDiff * 86400_000 +
+      drag.deltaMs;
+    durationMs = drag.originalEnd - drag.originalStart;
+    displayStart = dayStartMs + startInDayMs;
+  } else {
+    const newEnd = Math.max(
+      drag.originalStart + MIN_EVENT_MS,
+      drag.originalEnd + drag.deltaMs,
+    );
+    startInDayMs = drag.originalStart - dayStartMs;
+    durationMs = newEnd - drag.originalStart;
+    displayStart = drag.originalStart;
+  }
+  const topPx = (startInDayMs / 86400_000) * totalHeightPx;
+  const heightPx = Math.max((durationMs / 86400_000) * totalHeightPx, 14);
+  const showStackedTime = heightPx >= 32;
+  const showInlineTime = !showStackedTime && heightPx >= 20;
+  return (
+    <div
+      className="pointer-events-none absolute left-1 right-1 z-20 flex flex-col items-start justify-start overflow-hidden rounded px-1 py-0.5 text-left text-[11px] leading-tight shadow-md ring-2 ring-primary/60"
+      style={{
+        top: `${topPx}px`,
+        height: `${heightPx}px`,
+        backgroundColor: row.calendar.backgroundColor,
+        color: row.calendar.foregroundColor,
+        opacity: 0.92,
+      }}
+    >
+      <div className="w-full truncate font-medium">
+        {row.event.summary}
+        {showInlineTime && (
+          <span className="font-normal opacity-80">
+            {" · "}
+            {formatTime(displayStart)}
+          </span>
+        )}
+      </div>
+      {showStackedTime && (
+        <div className="w-full truncate opacity-80">
+          {formatTime(displayStart)}
+        </div>
+      )}
     </div>
   );
 }
@@ -740,5 +989,44 @@ function NowIndicator({
         <span className="absolute -left-1 -top-1 h-2.5 w-2.5 rounded-full bg-red-500" />
       </div>
     </div>
+  );
+}
+
+function TaskCheckbox({
+  className,
+  color,
+}: {
+  className: string;
+  color: string;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={`rounded-[3px] border-2 bg-background ${className}`}
+      style={{ borderColor: color }}
+    />
+  );
+}
+
+function BuildingIcon({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 13.5V3.5h8v10" />
+      <path d="M6.5 13.5v-3h3v3" />
+      <path d="M6.5 6h.01" />
+      <path d="M9.5 6h.01" />
+      <path d="M6.5 8.25h.01" />
+      <path d="M9.5 8.25h.01" />
+      <path d="M3 13.5h10" />
+    </svg>
   );
 }

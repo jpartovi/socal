@@ -354,14 +354,21 @@ function normalizeEventKind(
   const calendarLabel = `${meta.googleCalendarId} ${meta.calendarSummary}`
     .toLowerCase()
     .trim();
-  if (
-    meta.calendarSummary.toLowerCase() === "tasks" ||
-    calendarLabel.includes("#tasks") ||
-    calendarLabel.includes(" tasks")
-  ) {
+  if (looksLikeTasksCalendar(meta.calendarSummary, meta.googleCalendarId)) {
     return "task";
   }
   return "event";
+}
+
+function looksLikeTasksCalendar(summary: string, googleCalendarId: string): boolean {
+  const normalizedSummary = summary.toLowerCase().trim();
+  const normalizedId = googleCalendarId.toLowerCase();
+  return (
+    normalizedSummary === "tasks" ||
+    normalizedSummary === "task" ||
+    normalizedId.includes("#tasks") ||
+    normalizedId.includes("tasks")
+  );
 }
 
 export const syncCalendar = action({
@@ -1037,10 +1044,17 @@ export const _calendarNeedsKindBackfill = internalQuery({
   args: { calendarId: v.id("calendars") },
   returns: v.boolean(),
   handler: async (ctx, args) => {
+    const calendar = await ctx.db.get(args.calendarId);
+    if (calendar === null) return false;
     const events = await ctx.db
       .query("events")
       .withIndex("by_calendar", (q) => q.eq("calendarId", args.calendarId))
       .take(50);
-    return events.some((event) => event.eventKind === undefined);
+    return events.some(
+      (event) =>
+        event.eventKind === undefined ||
+        (looksLikeTasksCalendar(calendar.summary, calendar.googleCalendarId) &&
+          event.eventKind !== "task"),
+    );
   },
 });

@@ -653,6 +653,7 @@ function DayColumn({
   }
 
   function beginCreate(e: React.PointerEvent<HTMLDivElement>) {
+    if (!columnRef.current?.contains(e.target as Node)) return;
     if (!onCreateEvent) return;
     if (e.button !== 0) return;
     const rect = columnRef.current?.getBoundingClientRect();

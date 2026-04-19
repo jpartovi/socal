@@ -27,6 +27,7 @@ import { Wordmark } from "@/components/wordmark";
 import { useAuth } from "@/lib/auth";
 
 const SIDEBAR_OPEN_KEY = "socal.sidebarOpen";
+const CALENDAR_STATE_KEY = "socal.calendarState";
 
 export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -97,12 +98,63 @@ const VIEW_BUTTONS: Array<{ view: CalendarView; label: string; hint?: string }> 
     { view: "month", label: "Month", hint: "M" },
   ];
 
+function restoreCalendarState(): { view: CalendarView; anchor: Date } {
+  const fallback = { view: "week" as CalendarView, anchor: startOfDay(new Date()) };
+  try {
+    const raw = window.localStorage.getItem(CALENDAR_STATE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as {
+      view?: unknown;
+      anchor?: unknown;
+    };
+    if (!isCalendarView(parsed.view) || typeof parsed.anchor !== "number") {
+      return fallback;
+    }
+    const anchor = new Date(parsed.anchor);
+    if (Number.isNaN(anchor.getTime())) return fallback;
+    return { view: parsed.view, anchor: startOfDay(anchor) };
+  } catch {
+    return fallback;
+  }
+}
+
+function isCalendarView(value: unknown): value is CalendarView {
+  return (
+    value === "agenda" ||
+    value === "day" ||
+    value === "3day" ||
+    value === "4day" ||
+    value === "week" ||
+    value === "month"
+  );
+}
+
 function CalendarHome() {
   const { userId } = useAuth();
+  const [calendarStateReady, setCalendarStateReady] = useState(false);
   const [view, setView] = useState<CalendarView>("week");
-  const [anchor, setAnchor] = useState<Date>(() => startOfDay(new Date()));
+  const [anchor, setAnchor] = useState<Date | null>(null);
 
-  const { start, end } = useMemo(() => rangeFor(view, anchor), [view, anchor]);
+  useEffect(() => {
+    const restored = restoreCalendarState();
+    setView(restored.view);
+    setAnchor(restored.anchor);
+    setCalendarStateReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!calendarStateReady || anchor === null) return;
+    window.localStorage.setItem(
+      CALENDAR_STATE_KEY,
+      JSON.stringify({ view, anchor: anchor.getTime() }),
+    );
+  }, [calendarStateReady, view, anchor]);
+
+  const effectiveAnchor = anchor ?? startOfDay(new Date());
+  const { start, end } = useMemo(
+    () => rangeFor(view, effectiveAnchor),
+    [view, effectiveAnchor],
+  );
 
   const events = useQuery(
     api.events.listForUserInRange,
@@ -159,11 +211,11 @@ function CalendarHome() {
 
   const goToday = useCallback(() => setAnchor(startOfDay(new Date())), []);
   const goPrev = useCallback(
-    () => setAnchor((a) => navigate(view, a, -1)),
+    () => setAnchor((a) => navigate(view, a ?? startOfDay(new Date()), -1)),
     [view],
   );
   const goNext = useCallback(
-    () => setAnchor((a) => navigate(view, a, 1)),
+    () => setAnchor((a) => navigate(view, a ?? startOfDay(new Date()), 1)),
     [view],
   );
 
@@ -224,14 +276,14 @@ function CalendarHome() {
     return () => window.removeEventListener("keydown", onKey);
   }, [goToday, goPrev, goNext]);
 
-  if (!userId) return null;
+  if (!userId || !calendarStateReady || anchor === null) return null;
 
   return (
     <section className="flex min-h-0 w-full flex-1 flex-col gap-2 px-6 pb-3 pt-1">
       <Toolbar
         view={view}
         setView={setView}
-        title={titleFor(view, anchor)}
+        title={titleFor(view, effectiveAnchor)}
         onToday={goToday}
         onPrev={goPrev}
         onNext={goNext}
@@ -239,13 +291,13 @@ function CalendarHome() {
       {events === undefined ? (
         <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
       ) : view === "agenda" ? (
-        <AgendaView events={events} anchor={anchor} />
+        <AgendaView events={events} anchor={effectiveAnchor} />
       ) : view === "month" ? (
-        <MonthView events={events} anchor={anchor} />
+        <MonthView events={events} anchor={effectiveAnchor} />
       ) : (
         <DaysView
           events={events}
-          anchor={anchor}
+          anchor={effectiveAnchor}
           numDays={numDaysFor(view)}
           onMoveEvent={onMoveEvent}
           onCreateEvent={defaultCalendarId ? onCreateEvent : null}

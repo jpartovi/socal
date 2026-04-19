@@ -1,6 +1,7 @@
 "use client";
 
 import { EventPopover } from "@/components/calendar/event-popover";
+import { eventColor } from "@/components/calendar/colors";
 import {
   eventKindLabel,
   isTask,
@@ -98,7 +99,8 @@ function DayHeader({ date }: { date: Date }) {
 }
 
 function AgendaRow({ row }: { row: EventRow }) {
-  const { event, calendar } = row;
+  const { event } = row;
+  const color = eventColor(row);
   const task = isTask(row);
   const workingLocation = isWorkingLocation(row);
   return (
@@ -113,18 +115,18 @@ function AgendaRow({ row }: { row: EventRow }) {
             <span
               aria-hidden
               className="mt-1 size-3 shrink-0 rounded-[3px] border-2 bg-background"
-              style={{ borderColor: calendar.backgroundColor }}
+              style={{ borderColor: color }}
             />
           ) : workingLocation ? (
             <BuildingIcon
               className="mt-0.5 size-4 shrink-0"
-              color={calendar.backgroundColor}
+              color={color}
             />
           ) : (
             <span
               aria-hidden
               className="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: calendar.backgroundColor }}
+              style={{ backgroundColor: color }}
             />
           )}
           <div className="flex min-w-0 flex-1 items-baseline justify-between gap-3">

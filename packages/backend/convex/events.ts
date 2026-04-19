@@ -5,6 +5,7 @@ import {
   action,
   internalMutation,
   internalQuery,
+  mutation,
   query,
 } from "./_generated/server";
 import { getValidAccessToken } from "./googleTokens";
@@ -65,6 +66,7 @@ const eventDoc = v.object({
   status: eventStatus,
   htmlLink: v.optional(v.string()),
   updatedAt: v.number(),
+  colorOverride: v.optional(v.string()),
   eventKind: v.optional(eventKind),
   // Enriched at query time with photo + socalUserId joined from googleAccounts.
   attendees: v.optional(v.array(resolvedAttendee)),
@@ -86,6 +88,8 @@ const eventWithCalendar = v.object({
     backgroundColor: v.string(),
     foregroundColor: v.string(),
     googleAccountId: v.id("googleAccounts"),
+    googleAccountName: v.optional(v.string()),
+    googleAccountEmail: v.string(),
     accessRole: calendarAccessRole,
   }),
 });
@@ -126,6 +130,8 @@ export const listForUserInRange = query({
         backgroundColor: string;
         foregroundColor: string;
         googleAccountId: Id<"googleAccounts">;
+        googleAccountName?: string;
+        googleAccountEmail: string;
         accessRole: "owner" | "writer" | "reader" | "freeBusyReader";
       };
     }> = [];
@@ -157,6 +163,8 @@ export const listForUserInRange = query({
               backgroundColor: cal.colorOverride ?? cal.backgroundColor,
               foregroundColor: cal.foregroundColor,
               googleAccountId: cal.googleAccountId,
+              googleAccountName: acc.name,
+              googleAccountEmail: acc.email,
               accessRole: cal.accessRole,
             },
           });
@@ -354,14 +362,21 @@ function normalizeEventKind(
   const calendarLabel = `${meta.googleCalendarId} ${meta.calendarSummary}`
     .toLowerCase()
     .trim();
-  if (
-    meta.calendarSummary.toLowerCase() === "tasks" ||
-    calendarLabel.includes("#tasks") ||
-    calendarLabel.includes(" tasks")
-  ) {
+  if (looksLikeTasksCalendar(meta.calendarSummary, meta.googleCalendarId)) {
     return "task";
   }
   return "event";
+}
+
+function looksLikeTasksCalendar(summary: string, googleCalendarId: string): boolean {
+  const normalizedSummary = summary.toLowerCase().trim();
+  const normalizedId = googleCalendarId.toLowerCase();
+  return (
+    normalizedSummary === "tasks" ||
+    normalizedSummary === "task" ||
+    normalizedId.includes("#tasks") ||
+    normalizedId.includes("tasks")
+  );
 }
 
 export const syncCalendar = action({
@@ -664,6 +679,39 @@ export const _applyLocalDelete = internalMutation({
   },
 });
 
+export const updateEventColor = mutation({
+  args: {
+    userId: v.id("users"),
+    eventId: v.id("events"),
+    colorOverride: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (
+      args.colorOverride !== null &&
+      !/^#[0-9a-fA-F]{6}$/.test(args.colorOverride)
+    ) {
+      throw new ConvexError("Color must be a hex value");
+    }
+    const ev = await ctx.db.get(args.eventId);
+    if (ev === null) throw new ConvexError("Event not found");
+    const cal = await ctx.db.get(ev.calendarId);
+    if (cal === null) throw new ConvexError("Calendar not found");
+    const account = await ctx.db.get(cal.googleAccountId);
+    if (account === null || account.userId !== args.userId) {
+      throw new ConvexError("Forbidden");
+    }
+    if (cal.accessRole !== "owner" && cal.accessRole !== "writer") {
+      throw new ConvexError("Calendar is read-only");
+    }
+    await ctx.db.patch(args.eventId, {
+      colorOverride: args.colorOverride ?? undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
 // Patch arbitrary fields on an event. Times, if provided, must be consistent
 // (end > start; allDay flag must match the dateTime vs date shape).
 export const updateEventFields = action({
@@ -673,6 +721,7 @@ export const updateEventFields = action({
     summary: v.optional(v.string()),
     description: v.optional(v.string()),
     location: v.optional(v.string()),
+    attendees: v.optional(v.array(v.string())),
     start: v.optional(v.number()),
     end: v.optional(v.number()),
   },
@@ -700,6 +749,11 @@ export const updateEventFields = action({
     if (args.summary !== undefined) body.summary = args.summary;
     if (args.description !== undefined) body.description = args.description;
     if (args.location !== undefined) body.location = args.location;
+    if (args.attendees !== undefined) {
+      body.attendees = normalizeAttendeeEmails(args.attendees).map((email) => ({
+        email,
+      }));
+    }
     if (args.start !== undefined) {
       body.start = ctxEv.allDay
         ? { date: toYMD(args.start) }
@@ -733,6 +787,13 @@ export const updateEventFields = action({
       summary: args.summary,
       description: args.description,
       location: args.location,
+      attendees:
+        args.attendees === undefined
+          ? undefined
+          : normalizeAttendeeEmails(args.attendees).map((email) => ({
+              email,
+              responseStatus: "needsAction" as const,
+            })),
       start: args.start,
       end: args.end,
     });
@@ -749,6 +810,7 @@ export const _applyLocalFields = internalMutation({
     summary: v.optional(v.string()),
     description: v.optional(v.string()),
     location: v.optional(v.string()),
+    attendees: v.optional(v.array(rawAttendee)),
     start: v.optional(v.number()),
     end: v.optional(v.number()),
   },
@@ -758,6 +820,7 @@ export const _applyLocalFields = internalMutation({
     if (args.summary !== undefined) patch.summary = args.summary;
     if (args.description !== undefined) patch.description = args.description;
     if (args.location !== undefined) patch.location = args.location;
+    if (args.attendees !== undefined) patch.attendees = args.attendees;
     if (args.start !== undefined) patch.start = args.start;
     if (args.end !== undefined) patch.end = args.end;
     await ctx.db.patch(args.eventId, patch);
@@ -778,9 +841,10 @@ export const createEvent = action({
     allDay: v.boolean(),
     description: v.optional(v.string()),
     location: v.optional(v.string()),
+    attendees: v.optional(v.array(v.string())),
   },
-  returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
+  returns: v.id("events"),
+  handler: async (ctx, args): Promise<Id<"events">> => {
     if (args.end <= args.start) {
       throw new ConvexError("End must be after start");
     }
@@ -806,6 +870,10 @@ export const createEvent = action({
     };
     if (args.description) body.description = args.description;
     if (args.location) body.location = args.location;
+    const attendees = normalizeAttendeeEmails(args.attendees ?? []);
+    if (attendees.length > 0) {
+      body.attendees = attendees.map((email) => ({ email }));
+    }
 
     const url = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
       ctxCal.googleCalendarId,
@@ -829,12 +897,19 @@ export const createEvent = action({
       updated?: string;
     };
 
-    await ctx.runMutation(internal.events._insertLocalEvent, {
+    const insertedId = await ctx.runMutation(internal.events._insertLocalEvent, {
       calendarId: args.calendarId,
       googleEventId: created.id,
       summary: args.summary,
       description: args.description,
       location: args.location,
+      attendees:
+        attendees.length > 0
+          ? attendees.map((email) => ({
+              email,
+              responseStatus: "needsAction" as const,
+            }))
+          : undefined,
       start: args.start,
       end: args.end,
       allDay: args.allDay,
@@ -843,7 +918,7 @@ export const createEvent = action({
     await ctx.runAction(api.events.syncCalendar, {
       calendarId: args.calendarId,
     });
-    return null;
+    return insertedId;
   },
 });
 
@@ -886,12 +961,13 @@ export const _insertLocalEvent = internalMutation({
     summary: v.string(),
     description: v.optional(v.string()),
     location: v.optional(v.string()),
+    attendees: v.optional(v.array(rawAttendee)),
     start: v.number(),
     end: v.number(),
     allDay: v.boolean(),
     htmlLink: v.optional(v.string()),
   },
-  returns: v.null(),
+  returns: v.id("events"),
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("events")
@@ -901,13 +977,14 @@ export const _insertLocalEvent = internalMutation({
           .eq("googleEventId", args.googleEventId),
       )
       .unique();
-    if (existing) return null;
-    await ctx.db.insert("events", {
+    if (existing) return existing._id;
+    return await ctx.db.insert("events", {
       calendarId: args.calendarId,
       googleEventId: args.googleEventId,
       summary: args.summary,
       description: args.description,
       location: args.location,
+      attendees: args.attendees,
       start: args.start,
       end: args.end,
       allDay: args.allDay,
@@ -916,9 +993,21 @@ export const _insertLocalEvent = internalMutation({
       htmlLink: args.htmlLink,
       updatedAt: Date.now(),
     });
-    return null;
   },
 });
+
+function normalizeAttendeeEmails(attendees: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of attendees) {
+    const email = raw.trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
 
 // YYYY-MM-DD in UTC (matches how we parse all-day dates on read).
 function toYMD(ms: number): string {
@@ -1037,10 +1126,17 @@ export const _calendarNeedsKindBackfill = internalQuery({
   args: { calendarId: v.id("calendars") },
   returns: v.boolean(),
   handler: async (ctx, args) => {
+    const calendar = await ctx.db.get(args.calendarId);
+    if (calendar === null) return false;
     const events = await ctx.db
       .query("events")
       .withIndex("by_calendar", (q) => q.eq("calendarId", args.calendarId))
       .take(50);
-    return events.some((event) => event.eventKind === undefined);
+    return events.some(
+      (event) =>
+        event.eventKind === undefined ||
+        (looksLikeTasksCalendar(calendar.summary, calendar.googleCalendarId) &&
+          event.eventKind !== "task"),
+    );
   },
 });

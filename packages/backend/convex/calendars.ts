@@ -78,6 +78,30 @@ export const defaultWritable = query({
   },
 });
 
+export const defaultWritableCalendar = query({
+  args: { userId: v.id("users") },
+  returns: v.union(calendarDoc, v.null()),
+  handler: async (ctx, args) => {
+    const accounts = await ctx.db
+      .query("googleAccounts")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    for (const acc of accounts) {
+      const cals = await ctx.db
+        .query("calendars")
+        .withIndex("by_account", (q) => q.eq("googleAccountId", acc._id))
+        .collect();
+      const primary = cals.find(
+        (c) =>
+          c.isPrimary &&
+          (c.accessRole === "owner" || c.accessRole === "writer"),
+      );
+      if (primary) return primary;
+    }
+    return null;
+  },
+});
+
 // Internal: every enabled calendar across all of this user's connected
 // Google accounts. Used by events.syncUser to know what to pull.
 export const _listEnabledForUser = internalQuery({

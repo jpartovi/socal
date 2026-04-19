@@ -177,6 +177,27 @@ export function formatTime(ms: number): string {
   });
 }
 
+// Google Calendar-style range: meridiem shown only when start and end differ
+// in am/pm, and ":00" minutes are always dropped. E.g. "8:40 – 9:55am",
+// "2 – 3pm", "7 – 9:30pm", "11am – 1pm".
+function formatTimeChunk(ms: number, hideMeridiem: boolean): string {
+  const d = new Date(ms);
+  const h24 = d.getHours();
+  const minutes = d.getMinutes();
+  const meridiem = h24 >= 12 ? "pm" : "am";
+  let h12 = h24 % 12;
+  if (h12 === 0) h12 = 12;
+  const minPart = minutes === 0 ? "" : `:${minutes.toString().padStart(2, "0")}`;
+  return `${h12}${minPart}${hideMeridiem ? "" : meridiem}`;
+}
+
+export function formatTimeRange(startMs: number, endMs: number): string {
+  const startIsPm = new Date(startMs).getHours() >= 12;
+  const endIsPm = new Date(endMs).getHours() >= 12;
+  const sameMeridiem = startIsPm === endIsPm;
+  return `${formatTimeChunk(startMs, sameMeridiem)} – ${formatTimeChunk(endMs, false)}`;
+}
+
 export function deviceTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }

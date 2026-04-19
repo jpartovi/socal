@@ -4,6 +4,7 @@ import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { ReactNode, useMemo } from "react";
 
 import { AuthProvider } from "@/lib/auth";
+import { UndoProvider } from "@/lib/undo";
 
 export function Providers({ children }: { children: ReactNode }) {
   const client = useMemo(() => {
@@ -22,7 +23,9 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <ConvexProvider client={client}>
-      <AuthProvider>{children}</AuthProvider>
+      <AuthProvider>
+        <UndoProvider>{children}</UndoProvider>
+      </AuthProvider>
     </ConvexProvider>
   );
 }

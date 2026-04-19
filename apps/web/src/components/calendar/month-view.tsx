@@ -1,6 +1,7 @@
 "use client";
 
 import { EventPopover } from "@/components/calendar/event-popover";
+import { eventColor, eventTextColor } from "@/components/calendar/colors";
 import {
   eventKindLabel,
   isTask,
@@ -104,6 +105,7 @@ export function MonthView({
 
 function MonthPill({ row }: { row: EventRow }) {
   const { event, calendar } = row;
+  const color = eventColor(row);
   const task = isTask(row);
   const workingLocation = isWorkingLocation(row);
   if (event.allDay) {
@@ -117,11 +119,11 @@ function MonthPill({ row }: { row: EventRow }) {
           style={{
             backgroundColor: workingLocation
               ? "transparent"
-              : calendar.backgroundColor,
-            borderColor: workingLocation ? calendar.backgroundColor : undefined,
+              : color,
+            borderColor: workingLocation ? color : undefined,
             color: workingLocation
-              ? calendar.backgroundColor
-              : calendar.foregroundColor,
+              ? color
+              : eventTextColor(row),
           }}
           title={`${eventKindLabel(row)}: ${event.summary}`}
         >
@@ -136,21 +138,21 @@ function MonthPill({ row }: { row: EventRow }) {
       <button
         type="button"
         className="flex items-center gap-1 truncate rounded px-1 text-left text-[10px] leading-tight outline-none hover:bg-muted"
-        style={{ color: task ? calendar.backgroundColor : undefined }}
+        style={{ color: task ? color : undefined }}
         title={`${eventKindLabel(row)}: ${event.summary}`}
       >
         {task ? (
           <span
             aria-hidden
             className="size-2.5 shrink-0 rounded-[3px] border-2 bg-background"
-            style={{ borderColor: calendar.backgroundColor }}
+            style={{ borderColor: color }}
           />
         ) : (
           <>
             <span
               aria-hidden
               className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: calendar.backgroundColor }}
+              style={{ backgroundColor: color }}
             />
             <span className="shrink-0 text-muted-foreground">
               {formatTime(event.start)}

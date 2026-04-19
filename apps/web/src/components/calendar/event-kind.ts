@@ -3,11 +3,16 @@ import type { EventRow } from "@/components/calendar/types";
 export type EventKind = "event" | "workingLocation" | "task";
 
 export function eventKind(row: EventRow): EventKind {
-  if (row.event.eventKind) return row.event.eventKind;
   const calendarName =
     row.calendar.summaryOverride ?? row.calendar.summary ?? "";
-  if (calendarName.toLowerCase() === "tasks") return "task";
+  if (looksLikeTasksCalendar(calendarName)) return "task";
+  if (row.event.eventKind) return row.event.eventKind;
   return "event";
+}
+
+function looksLikeTasksCalendar(calendarName: string): boolean {
+  const normalized = calendarName.toLowerCase().trim();
+  return normalized === "tasks" || normalized === "task";
 }
 
 export function isTask(row: EventRow): boolean {

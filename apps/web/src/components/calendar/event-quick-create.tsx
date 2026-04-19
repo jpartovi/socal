@@ -30,6 +30,7 @@ export function EventQuickCreate() {
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder="Make some plans"
+        data-quick-create-input
         className="min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none"
       />
       <button

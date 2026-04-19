@@ -1,7 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 
 // Friendships are bidirectional, so we store one row per pair with the
 // two user ids in lexicographic order. `orderPair` gives us the canonical
@@ -46,6 +46,13 @@ const friendUserSummary = v.object({
 const connectionEntry = v.object({
   friendshipId: v.id("friendships"),
   user: friendUserSummary,
+});
+
+const phoneInviteEntry = v.object({
+  inviteId: v.id("phoneInvites"),
+  phoneNumber: v.string(),
+  name: v.union(v.string(), v.null()),
+  invitedAt: v.number(),
 });
 
 function otherUserId(
@@ -138,6 +145,7 @@ export const listConnections = query({
     friends: v.array(connectionEntry),
     incoming: v.array(connectionEntry),
     outgoing: v.array(connectionEntry),
+    outgoingPhoneInvites: v.array(phoneInviteEntry),
   }),
   handler: async (ctx, args) => {
     const asA = await ctx.db
@@ -197,10 +205,21 @@ export const listConnections = query({
       };
     };
 
+    const phoneInvites = await ctx.db
+      .query("phoneInvites")
+      .withIndex("by_from_user", (q) => q.eq("fromUserId", args.userId))
+      .collect();
+
     return {
       friends: await Promise.all(friends.map(toSummary)),
       incoming: await Promise.all(incoming.map(toSummary)),
       outgoing: await Promise.all(outgoing.map(toSummary)),
+      outgoingPhoneInvites: phoneInvites.map((p) => ({
+        inviteId: p._id,
+        phoneNumber: p.phoneNumber,
+        name: p.name ?? null,
+        invitedAt: p.invitedAt,
+      })),
     };
   },
 });
@@ -331,11 +350,15 @@ export const removeById = mutation({
 });
 
 // Returns a discriminated status so the caller can distinguish "no user
-// with that phone yet" (prompt for SMS invite) from real errors.
+// with that phone yet" (prompt for SMS invite) from real errors. When no
+// user exists, also records a phoneInvite so the inviter sees the pending
+// invite in their sidebar and so the friendship auto-resolves when the
+// invitee eventually signs up.
 export const sendRequestByPhone = mutation({
   args: {
     fromUserId: v.id("users"),
     phoneNumber: v.string(),
+    name: v.optional(v.string()),
   },
   returns: v.union(
     v.object({
@@ -348,7 +371,10 @@ export const sendRequestByPhone = mutation({
     }),
     v.object({ status: v.literal("already_pending") }),
     v.object({ status: v.literal("already_friends") }),
-    v.object({ status: v.literal("no_user") }),
+    v.object({
+      status: v.literal("no_user"),
+      inviteId: v.id("phoneInvites"),
+    }),
   ),
   handler: async (ctx, args) => {
     const trimmed = args.phoneNumber.trim();
@@ -369,7 +395,25 @@ export const sendRequestByPhone = mutation({
       .withIndex("by_phone_number", (q) => q.eq("phoneNumber", trimmed))
       .unique();
     if (target === null) {
-      return { status: "no_user" as const };
+      const existingInvite = await ctx.db
+        .query("phoneInvites")
+        .withIndex("by_from_user_and_phone", (q) =>
+          q.eq("fromUserId", args.fromUserId).eq("phoneNumber", trimmed),
+        )
+        .unique();
+      if (existingInvite !== null) {
+        if (args.name !== undefined && existingInvite.name !== args.name) {
+          await ctx.db.patch(existingInvite._id, { name: args.name });
+        }
+        return { status: "no_user" as const, inviteId: existingInvite._id };
+      }
+      const inviteId = await ctx.db.insert("phoneInvites", {
+        fromUserId: args.fromUserId,
+        phoneNumber: trimmed,
+        name: args.name,
+        invitedAt: Date.now(),
+      });
+      return { status: "no_user" as const, inviteId };
     }
 
     const existing = await findFriendship(ctx, args.fromUserId, target._id);
@@ -398,5 +442,81 @@ export const sendRequestByPhone = mutation({
       status: "pending",
     });
     return { status: "sent" as const, friendshipId };
+  },
+});
+
+export const cancelPhoneInvite = mutation({
+  args: {
+    userId: v.id("users"),
+    inviteId: v.id("phoneInvites"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const invite = await ctx.db.get(args.inviteId);
+    if (invite === null) {
+      throw new ConvexError("Invite not found");
+    }
+    if (invite.fromUserId !== args.userId) {
+      throw new ConvexError("You did not send this invite");
+    }
+    await ctx.db.delete(args.inviteId);
+    return null;
+  },
+});
+
+// Called from users.create after a new user is inserted: converts any
+// pending phoneInvites matching the new user's phone into real pending
+// friendships (or accepts if two people invited each other), then deletes
+// the invites.
+export async function resolvePhoneInvitesForNewUser(
+  ctx: MutationCtx,
+  newUserId: Id<"users">,
+  phoneNumber: string,
+): Promise<number> {
+  const invites = await ctx.db
+    .query("phoneInvites")
+    .withIndex("by_phone_number", (q) => q.eq("phoneNumber", phoneNumber))
+    .collect();
+  let converted = 0;
+  for (const invite of invites) {
+    if (invite.fromUserId === newUserId) {
+      await ctx.db.delete(invite._id);
+      continue;
+    }
+    const existing = await ctx.db
+      .query("friendships")
+      .withIndex("by_pair", (q) => {
+        const { userA, userB } = orderPair(invite.fromUserId, newUserId);
+        return q.eq("userA", userA).eq("userB", userB);
+      })
+      .unique();
+    if (existing === null) {
+      const { userA, userB } = orderPair(invite.fromUserId, newUserId);
+      await ctx.db.insert("friendships", {
+        userA,
+        userB,
+        requesterId: invite.fromUserId,
+        status: "pending",
+      });
+      converted++;
+    }
+    await ctx.db.delete(invite._id);
+  }
+  return converted;
+}
+
+// Exposed for manual/admin use — regular resolution happens inside
+// users.create via the helper above.
+export const _resolvePhoneInvites = internalMutation({
+  args: { userId: v.id("users") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (user === null) return 0;
+    return await resolvePhoneInvitesForNewUser(
+      ctx,
+      args.userId,
+      user.phoneNumber,
+    );
   },
 });

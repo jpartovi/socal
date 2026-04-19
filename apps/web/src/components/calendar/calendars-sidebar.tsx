@@ -213,6 +213,7 @@ function FriendsSection({
   const sendRequestByPhone = useMutation(api.friendships.sendRequestByPhone);
   const acceptRequest = useMutation(api.friendships.acceptRequest);
   const removeById = useMutation(api.friendships.removeById);
+  const cancelPhoneInvite = useMutation(api.friendships.cancelPhoneInvite);
   const [phone, setPhone] = useState("");
   const [isInviting, setIsInviting] = useState(false);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -265,7 +266,8 @@ function FriendsSection({
       </h4>
       {data.friends.length === 0 &&
       data.incoming.length === 0 &&
-      data.outgoing.length === 0 ? (
+      data.outgoing.length === 0 &&
+      data.outgoingPhoneInvites.length === 0 ? (
         <p className="px-1 text-[11px] leading-5 text-muted-foreground">
           Add people you want to spend time with
         </p>
@@ -292,6 +294,15 @@ function FriendsSection({
               onAction={null}
               onRemove={() =>
                 removeById({ userId, friendshipId: entry.friendshipId })
+              }
+            />
+          ))}
+          {data.outgoingPhoneInvites.map((invite) => (
+            <PhoneInviteRow
+              key={invite.inviteId}
+              invite={invite}
+              onRemove={() =>
+                cancelPhoneInvite({ userId, inviteId: invite.inviteId })
               }
             />
           ))}
@@ -393,6 +404,47 @@ function RequestRow({
         onClick={onRemove}
         className="rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-background hover:text-foreground"
         aria-label={onAction ? `Reject ${name}` : `Cancel invite to ${name}`}
+      >
+        &times;
+      </button>
+    </div>
+  );
+}
+
+function PhoneInviteRow({
+  invite,
+  onRemove,
+}: {
+  invite: {
+    inviteId: Id<"phoneInvites">;
+    phoneNumber: string;
+    name: string | null;
+    invitedAt: number;
+  };
+  onRemove: () => void;
+}) {
+  const label = invite.name ?? invite.phoneNumber;
+  const initials =
+    (invite.name?.trim().split(/\s+/) ?? [])
+      .map((p) => p[0]?.toUpperCase() ?? "")
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("") || "?";
+  return (
+    <div
+      className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-muted"
+      title={invite.name ? `${invite.name} · ${invite.phoneNumber}` : label}
+    >
+      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-muted text-[10px] font-medium text-muted-foreground">
+        {initials}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-xs">{label}</span>
+      <span className="text-[10px] text-muted-foreground">Texted</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-background hover:text-foreground"
+        aria-label={`Cancel invite to ${label}`}
       >
         &times;
       </button>

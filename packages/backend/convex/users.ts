@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { resolvePhoneInvitesForNewUser } from "./friendships";
 
 // TODO: replace with Twilio Verify. Any phone accepts this stub code for now.
 const STUB_CODE = "000000";
@@ -92,12 +93,14 @@ export const create = mutation({
     if (existing !== null) {
       throw new ConvexError("A user with that phone number already exists");
     }
-    return await ctx.db.insert("users", {
+    const userId = await ctx.db.insert("users", {
       phoneNumber: args.phoneNumber,
       firstName: args.firstName,
       lastName: args.lastName,
       useDefaultAvatar: true,
     });
+    await resolvePhoneInvitesForNewUser(ctx, userId, args.phoneNumber);
+    return userId;
   },
 });
 

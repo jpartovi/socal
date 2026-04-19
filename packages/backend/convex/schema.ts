@@ -26,6 +26,20 @@ export default defineSchema({
     .index("by_userA_status", ["userA", "status"])
     .index("by_userB_status", ["userB", "status"]),
 
+  // Pending friend invites sent to a phone number that doesn't yet belong
+  // to a socal user. When that phone later signs up, `users.create` converts
+  // the matching rows into real pending friendships. Deduped on
+  // (fromUserId, phoneNumber).
+  phoneInvites: defineTable({
+    fromUserId: v.id("users"),
+    phoneNumber: v.string(),
+    name: v.optional(v.string()),
+    invitedAt: v.number(),
+  })
+    .index("by_from_user", ["fromUserId"])
+    .index("by_phone_number", ["phoneNumber"])
+    .index("by_from_user_and_phone", ["fromUserId", "phoneNumber"]),
+
   // Google accounts connected to a socal user. A single user may connect
   // multiple Google accounts. `googleSub` is Google's stable unique identifier
   // for the account and is what we dedupe on. OAuth tokens are stored here so

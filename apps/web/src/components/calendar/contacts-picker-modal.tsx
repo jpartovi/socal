@@ -129,6 +129,7 @@ export function ContactsPickerModal({
         const result = await sendRequestByPhone({
           fromUserId: userId,
           phoneNumber: contact.phone,
+          name: contact.name,
         });
         if (result.status === "no_user") {
           needSms.push(contact);

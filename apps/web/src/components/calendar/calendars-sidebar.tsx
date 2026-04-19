@@ -442,20 +442,43 @@ function FriendAvatar({ entry }: { entry: FriendEntry }) {
   return (
     <span
       title={name}
-      className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-muted text-[10px] font-medium text-muted-foreground"
+      className="group relative flex h-12 w-9 shrink-0 items-start justify-center"
     >
-      {entry.user.photoUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={entry.user.photoUrl}
-          alt={name}
-          referrerPolicy="no-referrer"
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <span>{initials || "?"}</span>
-      )}
+      <span className="relative z-10 flex size-9 items-center justify-center overflow-hidden rounded-full border bg-muted text-[11px] font-medium text-muted-foreground transition-transform duration-150 group-hover:-translate-y-1">
+        {entry.user.photoUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={entry.user.photoUrl}
+            alt={name}
+            referrerPolicy="no-referrer"
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span>{initials || "?"}</span>
+        )}
+      </span>
+      <FriendStickBody />
     </span>
+  );
+}
+
+function FriendStickBody() {
+  return (
+    <svg
+      viewBox="0 0 18 18"
+      aria-hidden
+      className="absolute left-1/2 top-7 h-5 w-5 -translate-x-1/2 -translate-y-1 scale-y-50 text-muted-foreground opacity-0 transition duration-150 group-hover:translate-y-0 group-hover:scale-y-100 group-hover:opacity-100"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9 2.5v7" />
+      <path d="M5.5 5.75c1 .6 2.15.9 3.5.9s2.5-.3 3.5-.9" />
+      <path d="M9 9.5 6 15" />
+      <path d="M9 9.5 12 15" />
+    </svg>
   );
 }
 

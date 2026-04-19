@@ -96,9 +96,28 @@ function InviteForm({ userId }: { userId: Id<"users"> }) {
     setIsSubmitting(true);
     setMessage(null);
     try {
-      await sendRequestByPhone({ fromUserId: userId, phoneNumber: trimmed });
+      const result = await sendRequestByPhone({
+        fromUserId: userId,
+        phoneNumber: trimmed,
+      });
       setPhone("");
-      setMessage({ tone: "info", text: "Request sent" });
+      if (result.status === "sent") {
+        setMessage({ tone: "info", text: "Request sent" });
+      } else if (result.status === "accepted") {
+        setMessage({
+          tone: "info",
+          text: "You're now friends — they'd already sent you a request",
+        });
+      } else if (result.status === "already_pending") {
+        setMessage({ tone: "info", text: "Request already pending" });
+      } else if (result.status === "already_friends") {
+        setMessage({ tone: "info", text: "You're already friends" });
+      } else {
+        setMessage({
+          tone: "info",
+          text: "They're not on socal yet — we'll connect you when they join",
+        });
+      }
     } catch (err) {
       setMessage({ tone: "error", text: errorMessage(err) });
     } finally {

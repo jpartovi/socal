@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { resolvePhoneInvitesForNewUser } from "./friendships";
+import { normalizePhone } from "./phone";
 
 // TODO: replace with Twilio Verify. Any phone accepts this stub code for now.
 const STUB_CODE = "000000";
@@ -45,11 +46,10 @@ export const getByPhone = query({
   args: { phoneNumber: v.string() },
   returns: v.union(userDoc, v.null()),
   handler: async (ctx, args) => {
+    const phone = normalizePhone(args.phoneNumber);
     return await ctx.db
       .query("users")
-      .withIndex("by_phone_number", (q) =>
-        q.eq("phoneNumber", args.phoneNumber),
-      )
+      .withIndex("by_phone_number", (q) => q.eq("phoneNumber", phone))
       .unique();
   },
 });
@@ -66,11 +66,10 @@ export const verifyCode = mutation({
     if (args.code !== STUB_CODE) {
       throw new ConvexError("Invalid code");
     }
+    const phone = normalizePhone(args.phoneNumber);
     const user = await ctx.db
       .query("users")
-      .withIndex("by_phone_number", (q) =>
-        q.eq("phoneNumber", args.phoneNumber),
-      )
+      .withIndex("by_phone_number", (q) => q.eq("phoneNumber", phone))
       .unique();
     return { user };
   },
@@ -84,22 +83,21 @@ export const create = mutation({
   },
   returns: v.id("users"),
   handler: async (ctx, args) => {
+    const phone = normalizePhone(args.phoneNumber);
     const existing = await ctx.db
       .query("users")
-      .withIndex("by_phone_number", (q) =>
-        q.eq("phoneNumber", args.phoneNumber),
-      )
+      .withIndex("by_phone_number", (q) => q.eq("phoneNumber", phone))
       .unique();
     if (existing !== null) {
       throw new ConvexError("A user with that phone number already exists");
     }
     const userId = await ctx.db.insert("users", {
-      phoneNumber: args.phoneNumber,
+      phoneNumber: phone,
       firstName: args.firstName,
       lastName: args.lastName,
       useDefaultAvatar: true,
     });
-    await resolvePhoneInvitesForNewUser(ctx, userId, args.phoneNumber);
+    await resolvePhoneInvitesForNewUser(ctx, userId, phone);
     return userId;
   },
 });
@@ -141,6 +139,77 @@ export const generatePhotoUploadUrl = mutation({
   returns: v.string(),
   handler: async (ctx) => {
     return await ctx.storage.generateUploadUrl();
+  },
+});
+
+// One-off migration: re-normalize phoneNumber on every existing user and
+// phoneInvite. Safe to run multiple times. Logs (and skips) any rows whose
+// phone can't be normalized (e.g. unrecognized format) or whose normalized
+// form would collide with another user already in the table.
+//
+// Invoke via: `npx convex run users:normalizeExistingPhones`.
+export const normalizeExistingPhones = mutation({
+  args: {},
+  returns: v.object({
+    usersUpdated: v.number(),
+    usersSkipped: v.number(),
+    invitesUpdated: v.number(),
+    invitesSkipped: v.number(),
+  }),
+  handler: async (ctx) => {
+    let usersUpdated = 0;
+    let usersSkipped = 0;
+    let invitesUpdated = 0;
+    let invitesSkipped = 0;
+
+    const users = await ctx.db.query("users").collect();
+    for (const u of users) {
+      let normalized: string;
+      try {
+        normalized = normalizePhone(u.phoneNumber);
+      } catch (err) {
+        console.warn(
+          `normalizeExistingPhones: cannot normalize user ${u._id} phone=${u.phoneNumber}: ${(err as Error).message}`,
+        );
+        usersSkipped++;
+        continue;
+      }
+      if (normalized === u.phoneNumber) continue;
+      const collision = await ctx.db
+        .query("users")
+        .withIndex("by_phone_number", (q) =>
+          q.eq("phoneNumber", normalized),
+        )
+        .unique();
+      if (collision !== null && collision._id !== u._id) {
+        console.warn(
+          `normalizeExistingPhones: skipping user ${u._id} — ${normalized} already owned by ${collision._id}`,
+        );
+        usersSkipped++;
+        continue;
+      }
+      await ctx.db.patch(u._id, { phoneNumber: normalized });
+      usersUpdated++;
+    }
+
+    const invites = await ctx.db.query("phoneInvites").collect();
+    for (const inv of invites) {
+      let normalized: string;
+      try {
+        normalized = normalizePhone(inv.phoneNumber);
+      } catch (err) {
+        console.warn(
+          `normalizeExistingPhones: cannot normalize invite ${inv._id} phone=${inv.phoneNumber}: ${(err as Error).message}`,
+        );
+        invitesSkipped++;
+        continue;
+      }
+      if (normalized === inv.phoneNumber) continue;
+      await ctx.db.patch(inv._id, { phoneNumber: normalized });
+      invitesUpdated++;
+    }
+
+    return { usersUpdated, usersSkipped, invitesUpdated, invitesSkipped };
   },
 });
 

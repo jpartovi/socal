@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
+import { normalizePhone } from "./phone";
 
 // Friendships are bidirectional, so we store one row per pair with the
 // two user ids in lexicographic order. `orderPair` gives us the canonical
@@ -377,28 +378,25 @@ export const sendRequestByPhone = mutation({
     }),
   ),
   handler: async (ctx, args) => {
-    const trimmed = args.phoneNumber.trim();
-    if (trimmed.length === 0) {
-      throw new ConvexError("Phone number is required");
-    }
+    const phone = normalizePhone(args.phoneNumber);
 
     const me = await ctx.db.get(args.fromUserId);
     if (me === null) {
       throw new ConvexError("Sender does not exist");
     }
-    if (me.phoneNumber === trimmed) {
+    if (me.phoneNumber === phone) {
       throw new ConvexError("You cannot send a friend request to yourself");
     }
 
     const target = await ctx.db
       .query("users")
-      .withIndex("by_phone_number", (q) => q.eq("phoneNumber", trimmed))
+      .withIndex("by_phone_number", (q) => q.eq("phoneNumber", phone))
       .unique();
     if (target === null) {
       const existingInvite = await ctx.db
         .query("phoneInvites")
         .withIndex("by_from_user_and_phone", (q) =>
-          q.eq("fromUserId", args.fromUserId).eq("phoneNumber", trimmed),
+          q.eq("fromUserId", args.fromUserId).eq("phoneNumber", phone),
         )
         .unique();
       if (existingInvite !== null) {
@@ -409,7 +407,7 @@ export const sendRequestByPhone = mutation({
       }
       const inviteId = await ctx.db.insert("phoneInvites", {
         fromUserId: args.fromUserId,
-        phoneNumber: trimmed,
+        phoneNumber: phone,
         name: args.name,
         invitedAt: Date.now(),
       });

@@ -13,13 +13,22 @@ import {
   sameDay,
   startOfDay,
 } from "@/components/calendar/lib";
-import type { EventRow } from "@/components/calendar/types";
+import { ProposalItem } from "@/components/calendar/proposal-item";
+import type { EventRow, ProposalRow } from "@/components/calendar/types";
+
+// Discriminated union so proposal ghost cards can be interleaved with event
+// rows by start time without losing type info at the render site.
+type AgendaItem =
+  | { kind: "event"; start: number; row: EventRow }
+  | { kind: "proposal"; start: number; row: ProposalRow };
 
 export function AgendaView({
   events,
+  proposals,
   anchor,
 }: {
   events: EventRow[];
+  proposals: ProposalRow[];
   anchor: Date;
 }) {
   // Group by day for the 30-day window starting at anchor.
@@ -28,7 +37,7 @@ export function AgendaView({
     days.push(addDays(startOfDay(anchor), i));
   }
 
-  const byDay = new Map<number, EventRow[]>();
+  const byDay = new Map<number, AgendaItem[]>();
   for (const row of events) {
     const first = startOfDay(new Date(row.event.start));
     const last = startOfDay(new Date(row.event.end - 1));
@@ -36,7 +45,19 @@ export function AgendaView({
     while (cur.getTime() <= last.getTime()) {
       const key = cur.getTime();
       const list = byDay.get(key) ?? [];
-      list.push(row);
+      list.push({ kind: "event", start: row.event.start, row });
+      byDay.set(key, list);
+      cur = addDays(cur, 1);
+    }
+  }
+  for (const row of proposals) {
+    const first = startOfDay(new Date(row.proposal.start));
+    const last = startOfDay(new Date(row.proposal.end - 1));
+    let cur = first;
+    while (cur.getTime() <= last.getTime()) {
+      const key = cur.getTime();
+      const list = byDay.get(key) ?? [];
+      list.push({ kind: "proposal", start: row.proposal.start, row });
       byDay.set(key, list);
       cur = addDays(cur, 1);
     }
@@ -57,17 +78,28 @@ export function AgendaView({
   return (
     <div className="flex flex-col gap-6 px-2">
       {visibleDays.map((d) => {
-        const rows = byDay.get(d.getTime()) ?? [];
+        const items = (byDay.get(d.getTime()) ?? [])
+          .slice()
+          .sort((a, b) => a.start - b.start);
         return (
           <div key={d.getTime()} className="flex flex-col gap-2">
             <DayHeader date={d} />
             <ul className="flex flex-col divide-y rounded-xl border">
-              {rows.map((row) => (
-                <AgendaRow
-                  key={`${d.getTime()}-${row.event._id}`}
-                  row={row}
-                />
-              ))}
+              {items.map((item) =>
+                item.kind === "event" ? (
+                  <AgendaRow
+                    key={`${d.getTime()}-event-${item.row.event._id}`}
+                    row={item.row}
+                  />
+                ) : (
+                  <li
+                    key={`${d.getTime()}-proposal-${item.row.proposal._id}`}
+                    className="px-2 py-2"
+                  >
+                    <ProposalItem row={item.row} variant="agenda" />
+                  </li>
+                ),
+              )}
             </ul>
           </div>
         );

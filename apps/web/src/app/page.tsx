@@ -9,12 +9,12 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AgendaView } from "@/components/calendar/agenda-view";
+import { AgentInput } from "@/components/calendar/agent-input";
 import { CalendarsSidebar } from "@/components/calendar/calendars-sidebar";
 import {
   DaysView,
   type DraftCalendarEvent,
 } from "@/components/calendar/days-view";
-import { EventQuickCreate } from "@/components/calendar/event-quick-create";
 import {
   type CalendarView,
   navigate,
@@ -51,7 +51,6 @@ export default function Home() {
     });
   }, []);
 
-  // Global shortcuts: sidebar toggle + open shortcut reference.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -200,6 +199,14 @@ function CalendarHome() {
           ? rawEvents
           : rawEvents.filter((row) => !pendingDeletes.has(row.event._id)),
     [rawEvents, pendingDeletes],
+  );
+
+  // Pending event proposals in the same window. Rendered as ghost cards
+  // alongside real events. Live query so accept/reject removes them
+  // immediately without a round-trip.
+  const proposals = useQuery(
+    api.proposals.listForUserInRange,
+    userId ? { userId, start: start.getTime(), end: end.getTime() } : "skip",
   );
 
   const syncUser = useAction(api.events.syncUser);
@@ -417,12 +424,21 @@ function CalendarHome() {
       {events === undefined ? (
         <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
       ) : view === "agenda" ? (
-        <AgendaView events={events} anchor={effectiveAnchor} />
+        <AgendaView
+          events={events}
+          proposals={proposals ?? []}
+          anchor={effectiveAnchor}
+        />
       ) : view === "month" ? (
-        <MonthView events={events} anchor={effectiveAnchor} />
+        <MonthView
+          events={events}
+          proposals={proposals ?? []}
+          anchor={effectiveAnchor}
+        />
       ) : (
         <DaysView
           events={events}
+          proposals={proposals ?? []}
           anchor={effectiveAnchor}
           numDays={numDaysFor(view)}
           onMoveEvent={onMoveEvent}
@@ -445,7 +461,7 @@ function CalendarHome() {
         />
       )}
       <div className="mx-auto w-full max-w-2xl pt-1">
-        <EventQuickCreate />
+        <AgentInput />
       </div>
     </section>
   );

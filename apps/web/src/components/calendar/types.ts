@@ -4,3 +4,7 @@ import type { api } from "@socal/backend/convex/_generated/api";
 export type EventRow = FunctionReturnType<
   typeof api.events.listForUserInRange
 >[number];
+
+export type ProposalRow = FunctionReturnType<
+  typeof api.proposals.listForUserInRange
+>[number];

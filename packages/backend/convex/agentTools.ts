@@ -68,7 +68,8 @@ const readSchedule = ({ ctx, userId }: ToolDeps): StructuredToolInterface =>
     {
       name: "read_schedule",
       description:
-        "Return events on the user's enabled calendars whose start time falls within [startIso, endIso). " +
+        "Return every event on the user's enabled calendars that overlaps [startIso, endIso) — " +
+        "i.e. any event that is going on for any part of that window, including events that started before it, events contained within it, and events that run past it. " +
         "Use ISO 8601 timestamps with timezone offsets, e.g. 2026-04-20T00:00:00-07:00. " +
         "Cancelled events are excluded. Results are sorted by start time.",
       schema: z.object({

@@ -7,13 +7,13 @@ import { useState, type KeyboardEvent } from "react";
 import { useAuth } from "@/lib/auth";
 
 // Calendar agent entrypoint at the bottom of the home page. Sends the typed
-// message to api.agent.run and renders the reply (or error) just above the
-// input.
+// message to api.agent.run. The agent never replies in text — it acts via
+// tool calls that surface as proposals on the calendar — so we only surface
+// errors here, not an agent response.
 export function AgentInput() {
   const { userId } = useAuth();
   const runAgent = useAction(api.agent.run);
   const [value, setValue] = useState("");
-  const [reply, setReply] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
 
@@ -22,10 +22,8 @@ export function AgentInput() {
     if (!text || !userId || isPending) return;
     setIsPending(true);
     setError(null);
-    setReply(null);
     try {
-      const result = await runAgent({ userId, message: text });
-      setReply(result);
+      await runAgent({ userId, message: text });
       setValue("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -45,11 +43,6 @@ export function AgentInput() {
 
   return (
     <div className="flex flex-col gap-2">
-      {reply !== null && (
-        <div className="whitespace-pre-wrap rounded-2xl border bg-muted/40 px-4 py-3 text-sm">
-          {reply}
-        </div>
-      )}
       {error !== null && (
         <div className="rounded-2xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
           {error}

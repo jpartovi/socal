@@ -213,8 +213,8 @@ function EventPopoverBody({
       </Row>
 
       {canEdit && (
-        <div className="pl-14">
-          <div className="flex flex-wrap gap-1">
+        <div className="pl-6">
+          <div className="grid grid-cols-9 gap-1">
             <button
               type="button"
               className="h-5 w-5 rounded-full border border-border"

@@ -115,20 +115,25 @@ export function UndoProvider({ children }: { children: ReactNode }) {
         },
         onExpire: () => {
           const uid = userIdRef.current;
+          const clearPending = () =>
+            setPendingDeletes((s) => {
+              const next = new Set(s);
+              next.delete(eventId);
+              return next;
+            });
           if (!uid) {
+            clearPending();
             return;
           }
+          // Keep the event hidden until the server delete completes — otherwise
+          // it briefly reappears between onExpire firing and the Convex query
+          // removing the row. On failure we clear as well so the event comes
+          // back rather than staying hidden forever.
           deleteEvent({ userId: uid, eventId })
-            .then(() => {
-              setPendingDeletes((s) => {
-                const next = new Set(s);
-                next.delete(eventId);
-                return next;
-              });
-            })
             .catch((err) => {
               console.error("deleteEvent failed", err);
-            });
+            })
+            .finally(clearPending);
         },
       });
     },

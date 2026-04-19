@@ -18,7 +18,6 @@ export const EVENT_COLOR_SWATCHES = [
   "#8e24aa",
   "#9e69af",
   "#616161",
-  "#795548",
 ];
 
 export function eventColor(row: EventRow): string {

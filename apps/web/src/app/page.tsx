@@ -427,6 +427,16 @@ function CalendarHome() {
           numDays={numDaysFor(view)}
           onMoveEvent={onMoveEvent}
           onCreateEvent={defaultCalendarId ? onCreateEvent : null}
+          createEventAppearance={
+            defaultCalendar
+              ? {
+                  backgroundColor:
+                    defaultCalendar.colorOverride ??
+                    defaultCalendar.backgroundColor,
+                  foregroundColor: defaultCalendar.foregroundColor,
+                }
+              : null
+          }
           draftEvent={draftEvent}
           onDraftDismiss={() => setDraftEvent(null)}
           onDraftCommit={commitDraftEvent}

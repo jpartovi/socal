@@ -24,7 +24,6 @@ import {
 } from "react";
 
 import { useAuth } from "@/lib/auth";
-import { ContactsPickerModal } from "./contacts-picker-modal";
 
 const SIDEBAR_WIDTH_KEY = "socal.sidebarWidth";
 const SIDEBAR_MIN_WIDTH = 200;
@@ -216,7 +215,6 @@ function FriendsSection({
   const cancelPhoneInvite = useMutation(api.friendships.cancelPhoneInvite);
   const [phone, setPhone] = useState("");
   const [isInviting, setIsInviting] = useState(false);
-  const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [isPhoneFormOpen, setIsPhoneFormOpen] = useState(false);
 
   async function handleInvite(event: FormEvent<HTMLFormElement>) {
@@ -316,15 +314,6 @@ function FriendsSection({
         </div>
       )}
       <div className="mt-1 flex flex-col gap-1 px-1">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setIsPickerOpen(true)}
-          className="h-8 rounded-md px-2 text-xs"
-        >
-          Add from contacts
-        </Button>
         {!isPhoneFormOpen ? (
           <Button
             type="button"
@@ -359,13 +348,6 @@ function FriendsSection({
           </form>
         )}
       </div>
-      {isPickerOpen && (
-        <ContactsPickerModal
-          userId={userId}
-          onClose={() => setIsPickerOpen(false)}
-          notify={notify}
-        />
-      )}
     </section>
   );
 }

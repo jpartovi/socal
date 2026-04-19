@@ -9,7 +9,11 @@ import {
 } from "@socal/ui/components/popover";
 import { forwardRef, useEffect, useRef, useState } from "react";
 
-import { eventColor, eventTextColor } from "@/components/calendar/colors";
+import {
+  eventColor,
+  eventTextColor,
+  readableTextColor,
+} from "@/components/calendar/colors";
 import { EventPopover } from "@/components/calendar/event-popover";
 import {
   eventKindLabel,
@@ -61,6 +65,11 @@ type DraftCommitFields = {
   summary: string;
   location: string;
   attendees: string[];
+};
+
+type EventAppearance = {
+  backgroundColor: string;
+  foregroundColor: string;
 };
 
 type DragState = {
@@ -199,6 +208,7 @@ export function DaysView({
   numDays,
   onMoveEvent,
   onCreateEvent,
+  createEventAppearance,
   draftEvent,
   onDraftDismiss,
   onDraftCommit,
@@ -210,6 +220,7 @@ export function DaysView({
   numDays: number;
   onMoveEvent: (args: MoveEventArgs) => void;
   onCreateEvent: ((args: CreateEventArgs) => void) | null;
+  createEventAppearance: EventAppearance | null;
   draftEvent: DraftCalendarEvent | null;
   onDraftDismiss: () => void;
   onDraftCommit: (fields: DraftCommitFields) => Promise<void>;
@@ -466,6 +477,7 @@ export function DaysView({
                 workingLocations={workingLocations}
                 totalHeightPx={HOUR_HEIGHT * 24}
                 onCreateEvent={onCreateEvent}
+                createEventAppearance={createEventAppearance}
                 draftEvent={draftForDay}
                 onDraftDismiss={onDraftDismiss}
                 onDraftCommit={onDraftCommit}
@@ -1067,12 +1079,12 @@ const DraftEventBlock = forwardRef<
         height: `${heightPx}px`,
         zIndex: 20,
         backgroundColor: draft.backgroundColor,
-        color: draft.foregroundColor,
+        color: readableTextColor(draft.backgroundColor),
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >
       <span className="max-w-full truncate font-medium">
-        {draft.summary?.trim() || "Add title"}
+        {draft.summary?.trim() || "(no title)"}
       </span>
       <span className="max-w-full truncate opacity-80">
         {showStacked ? time : `, ${time}`}
@@ -1088,6 +1100,7 @@ function DayColumn({
   workingLocations,
   totalHeightPx,
   onCreateEvent,
+  createEventAppearance,
   draftEvent,
   onDraftDismiss,
   onDraftCommit,
@@ -1106,6 +1119,7 @@ function DayColumn({
   workingLocations: EventRow[];
   totalHeightPx: number;
   onCreateEvent: ((args: CreateEventArgs) => void) | null;
+  createEventAppearance: EventAppearance | null;
   draftEvent: DraftCalendarEvent | null;
   onDraftDismiss: () => void;
   onDraftCommit: (fields: DraftCommitFields) => Promise<void>;
@@ -1146,6 +1160,33 @@ function DayColumn({
       startMs = Math.max(0, endMs - MIN_EVENT_MS);
     }
     return { startMs, endMs };
+  }
+
+  function createPreviewFromOffsets(aOffsetY: number, bOffsetY: number) {
+    const minHeightPx = (MIN_EVENT_MS / 86400_000) * totalHeightPx;
+    const a = Math.max(0, Math.min(aOffsetY, totalHeightPx));
+    const b = Math.max(0, Math.min(bOffsetY, totalHeightPx));
+    let topPx = Math.min(a, b);
+    let bottomPx = Math.max(a, b);
+    if (bottomPx - topPx < minHeightPx) {
+      if (b < a) {
+        bottomPx = a;
+        topPx = Math.max(0, bottomPx - minHeightPx);
+      } else {
+        topPx = a;
+        bottomPx = Math.min(totalHeightPx, topPx + minHeightPx);
+      }
+      if (bottomPx - topPx < minHeightPx) {
+        topPx = Math.max(0, bottomPx - minHeightPx);
+      }
+    }
+    const { startMs, endMs } = createSelectionFromOffsets(aOffsetY, bOffsetY);
+    return {
+      topPx,
+      heightPx: bottomPx - topPx,
+      startMs,
+      endMs,
+    };
   }
 
   function beginCreate(e: React.PointerEvent<HTMLDivElement>) {
@@ -1209,13 +1250,10 @@ function DayColumn({
 
   const createPreview = (() => {
     if (!createDrag?.active) return null;
-    const { startMs, endMs } = createSelectionFromOffsets(
+    return createPreviewFromOffsets(
       createDrag.pointerStartY,
       createDrag.currentOffsetY,
     );
-    const topPx = (startMs / 86400_000) * totalHeightPx;
-    const heightPx = ((endMs - startMs) / 86400_000) * totalHeightPx;
-    return { topPx, heightPx, startMs, endMs };
   })();
 
   const draftSegment = draftEvent
@@ -1243,16 +1281,23 @@ function DayColumn({
       ))}
       {createPreview && (
         <div
-          className="pointer-events-none absolute inset-x-1 rounded border-2 border-dashed border-primary/70 bg-primary/20 px-1 py-0.5 text-[11px] font-medium text-primary"
+          className="pointer-events-none absolute inset-x-1 overflow-hidden rounded-md px-2 py-1 text-[11px] font-medium shadow-sm"
           style={{
             top: `${createPreview.topPx}px`,
-            height: `${Math.max(createPreview.heightPx, 14)}px`,
+            height: `${Math.max(createPreview.heightPx, 18)}px`,
             zIndex: 15,
+            backgroundColor:
+              createEventAppearance?.backgroundColor ?? "var(--primary)",
+            color: createEventAppearance
+              ? readableTextColor(createEventAppearance.backgroundColor)
+              : "var(--primary-foreground)",
           }}
         >
-          {formatTime(dayStartMs + createPreview.startMs)} –
-          {" "}
-          {formatTime(dayStartMs + createPreview.endMs)}
+          <div className="truncate">(no title)</div>
+          <div className="truncate font-normal opacity-80">
+            {formatTime(dayStartMs + createPreview.startMs)} -{" "}
+            {formatTime(dayStartMs + createPreview.endMs)}
+          </div>
         </div>
       )}
       {workingLocations.map((row) => {
@@ -1269,21 +1314,29 @@ function DayColumn({
           ((segment.endMs - segment.startMs) / 86400_000) * totalHeightPx,
           18,
         );
+        const color = eventColor(row);
         return (
           <div
             key={`${dayStart.getTime()}-${row.event._id}-working-location`}
-            className="pointer-events-none absolute left-1 right-1 flex items-start gap-1 border-l-4 bg-background/75 px-1 py-0.5 text-[11px] font-medium leading-tight"
+            className="pointer-events-none absolute left-1 flex flex-col items-start"
             style={{
               top: `${topPx}px`,
               height: `${heightPx}px`,
-              borderColor: eventColor(row),
-              color: eventColor(row),
               zIndex: 2,
             }}
             title={`${eventKindLabel(row)}: ${row.event.summary} · ${formatTimeRange(row.event.start, row.event.end)}`}
           >
-            <BuildingIcon className="mt-0.5 size-3 shrink-0" />
-            <span className="truncate">{row.event.summary}</span>
+            <div
+              className="flex items-center gap-1 whitespace-nowrap text-[11px] font-medium leading-tight"
+              style={{ color }}
+            >
+              <BuildingIcon className="size-3 shrink-0" />
+              <span>{row.event.summary}</span>
+            </div>
+            <div
+              className="ml-[5px] mt-0.5 w-0.5 flex-1 rounded-full"
+              style={{ backgroundColor: color, opacity: 0.7 }}
+            />
           </div>
         );
       })}

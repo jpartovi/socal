@@ -5,11 +5,15 @@ import type { Id } from "@socal/backend/convex/_generated/dataModel";
 import { Button } from "@socal/ui/components/button";
 import { useAction, useQuery } from "convex/react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AgendaView } from "@/components/calendar/agenda-view";
 import { CalendarsSidebar } from "@/components/calendar/calendars-sidebar";
-import { DaysView } from "@/components/calendar/days-view";
+import {
+  DaysView,
+  type DraftCalendarEvent,
+} from "@/components/calendar/days-view";
 import { EventQuickCreate } from "@/components/calendar/event-quick-create";
 import {
   type CalendarView,
@@ -25,11 +29,13 @@ import { RequireAuth } from "@/components/require-auth";
 import { UserMenu } from "@/components/user-menu";
 import { Wordmark } from "@/components/wordmark";
 import { useAuth } from "@/lib/auth";
+import { useUndo } from "@/lib/undo";
 
 const SIDEBAR_OPEN_KEY = "socal.sidebarOpen";
 const CALENDAR_STATE_KEY = "socal.calendarState";
 
 export default function Home() {
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
   useEffect(() => {
@@ -44,6 +50,31 @@ export default function Home() {
       return next;
     });
   }, []);
+
+  // Global shortcuts: sidebar toggle + open shortcut reference.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.key === "[") {
+        e.preventDefault();
+        toggleSidebar();
+      } else if (e.key === "?") {
+        e.preventDefault();
+        router.push("/keyboard-shortcuts");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [router, toggleSidebar]);
 
   return (
     <RequireAuth>
@@ -156,48 +187,131 @@ function CalendarHome() {
     [view, effectiveAnchor],
   );
 
-  const events = useQuery(
+  const rawEvents = useQuery(
     api.events.listForUserInRange,
     userId ? { userId, start: start.getTime(), end: end.getTime() } : "skip",
+  );
+  const { pendingDeletes, showUndoToast } = useUndo();
+  const events = useMemo(
+    () =>
+      rawEvents === undefined
+        ? undefined
+        : pendingDeletes.size === 0
+          ? rawEvents
+          : rawEvents.filter((row) => !pendingDeletes.has(row.event._id)),
+    [rawEvents, pendingDeletes],
   );
 
   const syncUser = useAction(api.events.syncUser);
   const patchEventTimes = useAction(api.events.patchEventTimes);
   const createEvent = useAction(api.events.createEvent);
-  const defaultCalendarId = useQuery(
-    api.calendars.defaultWritable,
+  const defaultCalendar = useQuery(
+    api.calendars.defaultWritableCalendar,
     userId ? { userId } : "skip",
   );
+  const defaultCalendarId = defaultCalendar?._id ?? null;
 
   const onMoveEvent = useCallback(
-    async (args: { eventId: Id<"events">; start: number; end: number }) => {
+    async (args: {
+      eventId: Id<"events">;
+      start: number;
+      end: number;
+      oldStart: number;
+      oldEnd: number;
+    }) => {
       if (!userId) return;
+      const { eventId, start, end, oldStart, oldEnd } = args;
+      if (start === oldStart && end === oldEnd) return;
       try {
-        await patchEventTimes({ userId, ...args });
+        await patchEventTimes({ userId, eventId, start, end });
+        showUndoToast({
+          message: "Event moved",
+          onUndo: () => {
+            patchEventTimes({
+              userId,
+              eventId,
+              start: oldStart,
+              end: oldEnd,
+            }).catch((err) => {
+              console.error("patchEventTimes undo failed", err);
+            });
+          },
+        });
       } catch (err) {
         console.error("patchEventTimes failed", err);
       }
     },
-    [userId, patchEventTimes],
+    [userId, patchEventTimes, showUndoToast],
   );
 
+  const [createdEventId, setCreatedEventId] = useState<Id<"events"> | null>(
+    null,
+  );
+  const [draftEvent, setDraftEvent] = useState<DraftCalendarEvent | null>(null);
+  const [committedDraftEventId, setCommittedDraftEventId] =
+    useState<Id<"events"> | null>(null);
+
+  useEffect(() => {
+    if (!committedDraftEventId || events === undefined) return;
+    if (!events.some((row) => row.event._id === committedDraftEventId)) return;
+    setDraftEvent(null);
+    setCommittedDraftEventId(null);
+  }, [committedDraftEventId, events]);
+
   const onCreateEvent = useCallback(
-    async (args: { start: number; end: number }) => {
-      if (!userId || !defaultCalendarId) return;
+    (args: { start: number; end: number }) => {
+      if (!defaultCalendar) return;
+      setCreatedEventId(null);
+      setCommittedDraftEventId(null);
+      setDraftEvent({
+        id: `draft-${args.start}-${args.end}-${Date.now()}`,
+        calendarId: defaultCalendar._id,
+        calendarName: defaultCalendar.summaryOverride ?? defaultCalendar.summary,
+        backgroundColor:
+          defaultCalendar.colorOverride ?? defaultCalendar.backgroundColor,
+        foregroundColor: defaultCalendar.foregroundColor,
+        start: args.start,
+        end: args.end,
+      });
+    },
+    [defaultCalendar],
+  );
+
+  const commitDraftEvent = useCallback(
+    async (fields: {
+      summary: string;
+      location: string;
+      attendees: string[];
+    }) => {
+      if (!userId) throw new Error("Cannot create event without a user.");
+      const summary = fields.summary.trim();
+      const location = fields.location.trim();
+      if (!summary && !location && fields.attendees.length === 0) return;
+      const draft = draftEvent;
+      if (!draft) throw new Error("Cannot create event without a draft.");
+      setDraftEvent((prev) =>
+        prev && prev.id === draft.id
+          ? { ...prev, summary: summary || "(no title)" }
+          : prev,
+      );
       try {
-        await createEvent({
+        const id = await createEvent({
           userId,
-          calendarId: defaultCalendarId,
-          summary: "(no title)",
-          start: args.start,
-          end: args.end,
+          calendarId: draft.calendarId,
+          summary: summary || "(no title)",
+          start: draft.start,
+          end: draft.end,
           allDay: false,
+          location,
+          attendees: fields.attendees,
         });
+        setCommittedDraftEventId(id);
       } catch (err) {
         console.error("createEvent failed", err);
+        throw err;
       }
     },
-    [userId, defaultCalendarId, createEvent],
+    [userId, draftEvent, createEvent],
   );
 
   // Fire a sync on mount per signed-in user. Incremental sync is cheap; the
@@ -267,6 +381,18 @@ function CalendarHome() {
         case "K":
           goNext();
           break;
+        case "c":
+        case "C": {
+          const input = document.querySelector<HTMLInputElement>(
+            "[data-quick-create-input]",
+          );
+          input?.focus();
+          break;
+        }
+        case "r":
+        case "R":
+          if (userId) syncUser({ userId }).catch(() => {});
+          break;
         default:
           return;
       }
@@ -274,7 +400,7 @@ function CalendarHome() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goToday, goPrev, goNext]);
+  }, [goToday, goPrev, goNext, syncUser, userId]);
 
   if (!userId || !calendarStateReady || anchor === null) return null;
 
@@ -301,6 +427,11 @@ function CalendarHome() {
           numDays={numDaysFor(view)}
           onMoveEvent={onMoveEvent}
           onCreateEvent={defaultCalendarId ? onCreateEvent : null}
+          draftEvent={draftEvent}
+          onDraftDismiss={() => setDraftEvent(null)}
+          onDraftCommit={commitDraftEvent}
+          createdEventId={createdEventId}
+          onCreateDismiss={() => setCreatedEventId(null)}
         />
       )}
       <div className="mx-auto w-full max-w-2xl pt-1">

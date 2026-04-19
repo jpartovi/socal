@@ -1,8 +1,15 @@
 "use client";
 
 import type { Id } from "@socal/backend/convex/_generated/dataModel";
-import { useEffect, useRef, useState } from "react";
+import { Input } from "@socal/ui/components/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@socal/ui/components/popover";
+import { forwardRef, useEffect, useRef, useState } from "react";
 
+import { eventColor, eventTextColor } from "@/components/calendar/colors";
 import { EventPopover } from "@/components/calendar/event-popover";
 import {
   eventKindLabel,
@@ -12,6 +19,7 @@ import {
 import {
   addDays,
   formatTime,
+  formatTimeRange,
   sameDay,
   shortTimeZoneLabel,
   startOfDay,
@@ -23,17 +31,36 @@ const HOUR_HEIGHT = 48; // px per hour in the grid
 const DEFAULT_SCROLL_HOUR = 7; // match Google Calendar's default morning anchor
 const SNAP_MS = 15 * 60_000;
 const DRAG_THRESHOLD_PX = 4;
-const MIN_EVENT_MS = 15 * 60_000;
+const MIN_EVENT_MS = 30 * 60_000;
 
 type MoveEventArgs = {
   eventId: Id<"events">;
   start: number;
   end: number;
+  oldStart: number;
+  oldEnd: number;
 };
 
 type CreateEventArgs = {
   start: number;
   end: number;
+};
+
+export type DraftCalendarEvent = {
+  id: string;
+  calendarId: Id<"calendars">;
+  calendarName: string;
+  backgroundColor: string;
+  foregroundColor: string;
+  summary?: string;
+  start: number;
+  end: number;
+};
+
+type DraftCommitFields = {
+  summary: string;
+  location: string;
+  attendees: string[];
 };
 
 type DragState = {
@@ -93,7 +120,7 @@ function layoutDay(rows: EventRow[], dayStart: Date): Positioned[] {
   };
 
   const clipped = rows
-    .filter((r) => !r.event.allDay)
+    .filter((r) => !r.event.allDay && !isWorkingLocation(r))
     .map((r) => {
       const startMs = Math.max(r.event.start, dayStartMs);
       const endMs = Math.min(r.event.end, dayEndMs);
@@ -172,12 +199,22 @@ export function DaysView({
   numDays,
   onMoveEvent,
   onCreateEvent,
+  draftEvent,
+  onDraftDismiss,
+  onDraftCommit,
+  createdEventId,
+  onCreateDismiss,
 }: {
   events: EventRow[];
   anchor: Date;
   numDays: number;
   onMoveEvent: (args: MoveEventArgs) => void;
   onCreateEvent: ((args: CreateEventArgs) => void) | null;
+  draftEvent: DraftCalendarEvent | null;
+  onDraftDismiss: () => void;
+  onDraftCommit: (fields: DraftCommitFields) => Promise<void>;
+  createdEventId: Id<"events"> | null;
+  onCreateDismiss: () => void;
 }) {
   const days: Date[] = [];
   for (let i = 0; i < numDays; i++) {
@@ -371,6 +408,8 @@ export function DaysView({
       eventId: s.eventId as Id<"events">,
       start: newStart,
       end: newEnd,
+      oldStart: s.originalStart,
+      oldEnd: s.originalEnd,
     });
   }
 
@@ -394,8 +433,12 @@ export function DaysView({
           </div>
           <AllDayRow
             days={days}
-            events={events}
+            events={effectiveEvents}
             columnsStyle={columnsStyle}
+            onMoveEvent={onMoveEvent}
+            setPendingMove={setPendingMove}
+            createdEventId={createdEventId}
+            onCreateDismiss={onCreateDismiss}
           />
         </div>
         <div
@@ -407,20 +450,33 @@ export function DaysView({
           {days.map((d, idx) => {
             const rows = eventsByDay.get(d.getTime()) ?? [];
             const positioned = layoutDay(rows, d);
+            const workingLocations = rows.filter(
+              (row) => !row.event.allDay && isWorkingLocation(row),
+            );
+            const draftForDay =
+              draftEvent && sameDay(new Date(draftEvent.start), d)
+                ? draftEvent
+                : null;
             return (
               <DayColumn
                 key={d.getTime()}
                 dayStart={d}
                 dayIndex={idx}
                 positioned={positioned}
+                workingLocations={workingLocations}
                 totalHeightPx={HOUR_HEIGHT * 24}
                 onCreateEvent={onCreateEvent}
+                draftEvent={draftForDay}
+                onDraftDismiss={onDraftDismiss}
+                onDraftCommit={onDraftCommit}
                 drag={drag}
                 draggedRow={draggedRow}
                 suppressClickRef={suppressClickRef}
                 onEventPointerDown={beginDrag}
                 onEventPointerMove={moveDrag}
                 onEventPointerUp={endDrag}
+                createdEventId={createdEventId}
+                onCreateDismiss={onCreateDismiss}
               />
             );
           })}
@@ -481,17 +537,49 @@ function DayColumnHeader({ date }: { date: Date }) {
   );
 }
 
+type AllDayDragState = {
+  eventId: string;
+  mode: "move" | "resize";
+  originalStart: number;
+  originalEnd: number;
+  startIdx: number;
+  endIdx: number;
+  pointerStartX: number;
+  deltaDays: number;
+  active: boolean;
+  pointerId: number;
+};
+
 function AllDayRow({
   days,
   events,
   columnsStyle,
+  onMoveEvent,
+  setPendingMove,
+  createdEventId,
+  onCreateDismiss,
 }: {
   days: Date[];
   events: EventRow[];
   columnsStyle: React.CSSProperties;
+  onMoveEvent: (args: MoveEventArgs) => void;
+  setPendingMove: (
+    pm: {
+      eventId: string;
+      expectedStart: number;
+      expectedEnd: number;
+    } | null,
+  ) => void;
+  createdEventId: Id<"events"> | null;
+  onCreateDismiss: () => void;
 }) {
   const windowStart = days[0].getTime();
   const windowEndExcl = days[days.length - 1].getTime() + 86400_000;
+  const numDays = days.length;
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [drag, setDrag] = useState<AllDayDragState | null>(null);
+  const dragRef = useRef<AllDayDragState | null>(null);
+  const suppressClickRef = useRef<Set<string>>(new Set());
 
   // One segment per all-day event, clipped to the visible window and mapped
   // to column indices. Google's all-day `end` is exclusive, so the last
@@ -537,8 +625,104 @@ function AllDayRow({
   });
   const lanes = laneEnd.length;
 
+  function canDrag(row: EventRow): boolean {
+    const r = row.calendar.accessRole;
+    if (r !== "owner" && r !== "writer") return false;
+    // Only drag events fully contained in the visible window — clipped
+    // segments would need extra math to translate back to absolute times.
+    return row.event.start >= windowStart && row.event.end <= windowEndExcl;
+  }
+
+  function begin(
+    e: React.PointerEvent<HTMLElement>,
+    row: EventRow,
+    mode: "move" | "resize",
+    startIdx: number,
+    endIdx: number,
+  ) {
+    const state: AllDayDragState = {
+      eventId: row.event._id as string,
+      mode,
+      originalStart: row.event.start,
+      originalEnd: row.event.end,
+      startIdx,
+      endIdx,
+      pointerStartX: e.clientX,
+      deltaDays: 0,
+      active: false,
+      pointerId: e.pointerId,
+    };
+    dragRef.current = state;
+    setDrag(state);
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+  }
+
+  function move(e: React.PointerEvent<HTMLElement>) {
+    const s = dragRef.current;
+    if (!s || s.pointerId !== e.pointerId) return;
+    const dx = e.clientX - s.pointerStartX;
+    if (!s.active && Math.abs(dx) < DRAG_THRESHOLD_PX) return;
+    const rect = gridRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const colWidth = (rect.width - 48) / numDays;
+    if (colWidth <= 0) return;
+    const rawDelta = Math.round(dx / colWidth);
+    // Clamp to the visible window so the chip never slides off either edge.
+    const minDelta =
+      s.mode === "move" ? -s.startIdx : s.startIdx - s.endIdx;
+    const maxDelta = numDays - 1 - s.endIdx;
+    const clamped = Math.max(minDelta, Math.min(maxDelta, rawDelta));
+    if (!s.active || clamped !== s.deltaDays) {
+      const next: AllDayDragState = {
+        ...s,
+        active: true,
+        deltaDays: clamped,
+      };
+      dragRef.current = next;
+      setDrag(next);
+    }
+  }
+
+  function end(e: React.PointerEvent<HTMLElement>) {
+    const s = dragRef.current;
+    if (!s || s.pointerId !== e.pointerId) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+    dragRef.current = null;
+    setDrag(null);
+    if (!s.active || s.deltaDays === 0) return;
+    suppressClickRef.current.add(s.eventId);
+    let newStart = s.originalStart;
+    let newEnd = s.originalEnd;
+    if (s.mode === "move") {
+      newStart = s.originalStart + s.deltaDays * 86400_000;
+      newEnd = s.originalEnd + s.deltaDays * 86400_000;
+    } else {
+      newEnd = Math.max(
+        s.originalStart + 86400_000,
+        s.originalEnd + s.deltaDays * 86400_000,
+      );
+    }
+    setPendingMove({
+      eventId: s.eventId,
+      expectedStart: newStart,
+      expectedEnd: newEnd,
+    });
+    onMoveEvent({
+      eventId: s.eventId as Id<"events">,
+      start: newStart,
+      end: newEnd,
+      oldStart: s.originalStart,
+      oldEnd: s.originalEnd,
+    });
+  }
+
   return (
     <div
+      ref={gridRef}
       className="grid border-b bg-muted/10"
       style={{
         ...columnsStyle,
@@ -551,38 +735,104 @@ function AllDayRow({
       >
         All day
       </div>
-      {laned.map((s) => (
-        <EventPopover
-          key={`${s.row.event._id}-${s.startIdx}`}
-          row={s.row}
-        >
-          <button
-            type="button"
-            className={`mx-0.5 my-0.5 flex items-center overflow-hidden rounded px-1.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2 ${
-              isWorkingLocation(s.row) ? "border bg-transparent" : ""
-            }`}
-            style={{
-              gridColumn: `${2 + s.startIdx} / ${3 + s.endIdx}`,
-              gridRow: `${s.lane + 1}`,
-              backgroundColor: isWorkingLocation(s.row)
-                ? "transparent"
-                : s.row.calendar.backgroundColor,
-              borderColor: isWorkingLocation(s.row)
-                ? s.row.calendar.backgroundColor
-                : undefined,
-              color: isWorkingLocation(s.row)
-                ? s.row.calendar.backgroundColor
-                : s.row.calendar.foregroundColor,
-            }}
-            title={s.row.event.summary}
+      {laned.map((s) => {
+        const writable = canDrag(s.row);
+        const isDraggingMe =
+          drag !== null && drag.eventId === (s.row.event._id as string);
+        const activeDrag = isDraggingMe && drag.active;
+        let startCol = s.startIdx;
+        let endCol = s.endIdx;
+        if (activeDrag && drag) {
+          if (drag.mode === "move") {
+            startCol = s.startIdx + drag.deltaDays;
+            endCol = s.endIdx + drag.deltaDays;
+          } else {
+            endCol = s.endIdx + drag.deltaDays;
+          }
+        }
+        const eventIdStr = s.row.event._id as string;
+        const handleClickCapture = (
+          e: React.MouseEvent<HTMLButtonElement>,
+        ) => {
+          if (suppressClickRef.current.has(eventIdStr)) {
+            suppressClickRef.current.delete(eventIdStr);
+            e.preventDefault();
+            e.stopPropagation();
+            (e.nativeEvent as Event & {
+              stopImmediatePropagation?: () => void;
+            }).stopImmediatePropagation?.();
+          }
+        };
+        const isNewlyCreated =
+          createdEventId !== null && s.row.event._id === createdEventId;
+        return (
+          <EventPopover
+            key={`${s.row.event._id}-${s.startIdx}`}
+            row={s.row}
+            open={isNewlyCreated ? true : undefined}
+            onOpenChange={
+              isNewlyCreated ? (o) => !o && onCreateDismiss() : undefined
+            }
+            defaultEditing={isNewlyCreated}
           >
-            {isWorkingLocation(s.row) && (
-              <BuildingIcon className="mr-1 size-3 shrink-0" />
-            )}
-            <span className="truncate">{s.row.event.summary}</span>
-          </button>
-        </EventPopover>
-      ))}
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                if (!writable) return;
+                begin(e, s.row, "move", s.startIdx, s.endIdx);
+              }}
+              onPointerMove={move}
+              onPointerUp={end}
+              onPointerCancel={end}
+              onClickCapture={handleClickCapture}
+              className={`relative mx-0.5 my-0.5 flex items-center overflow-hidden rounded px-1.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2 ${
+                isWorkingLocation(s.row) ? "border bg-transparent" : ""
+              } ${writable ? "cursor-grab active:cursor-grabbing" : ""}`}
+              style={{
+                gridColumn: `${2 + startCol} / ${3 + endCol}`,
+                gridRow: `${s.lane + 1}`,
+                backgroundColor: isWorkingLocation(s.row)
+                  ? "transparent"
+                  : eventColor(s.row),
+                borderColor: isWorkingLocation(s.row)
+                  ? eventColor(s.row)
+                  : undefined,
+                color: isWorkingLocation(s.row)
+                  ? eventColor(s.row)
+                  : eventTextColor(s.row),
+                opacity: activeDrag ? 0.85 : 1,
+                boxShadow: activeDrag
+                  ? "0 0 0 2px var(--ring, rgba(99,102,241,0.6))"
+                  : undefined,
+                touchAction: writable ? "none" : undefined,
+              }}
+              title={s.row.event.summary}
+            >
+              {isWorkingLocation(s.row) && (
+                <BuildingIcon className="mr-1 size-3 shrink-0" />
+              )}
+              <span className="truncate">{s.row.event.summary}</span>
+              {writable && (
+                <span
+                  aria-hidden
+                  role="presentation"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.stopPropagation();
+                    begin(e, s.row, "resize", s.startIdx, s.endIdx);
+                  }}
+                  onPointerMove={move}
+                  onPointerUp={end}
+                  onPointerCancel={end}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute inset-y-0 right-0 w-1.5 cursor-ew-resize"
+                />
+              )}
+            </button>
+          </EventPopover>
+        );
+      })}
     </div>
   );
 }
@@ -609,24 +859,256 @@ function formatHourLabel(h: number): string {
   return d.toLocaleTimeString(undefined, { hour: "numeric", hour12: true });
 }
 
+function clippedTimedSegment(
+  start: number,
+  end: number,
+  dayStartMs: number,
+  dayEndMs: number,
+): { startMs: number; endMs: number } | null {
+  const startMs = Math.max(start, dayStartMs);
+  const endMs = Math.min(end, dayEndMs);
+  return endMs > startMs ? { startMs, endMs } : null;
+}
+
+function DraftEventPopover({
+  draft,
+  children,
+  onDismiss,
+  onCommit,
+}: {
+  draft: DraftCalendarEvent;
+  children: React.ReactNode;
+  onDismiss: () => void;
+  onCommit: (fields: DraftCommitFields) => Promise<void>;
+}) {
+  const [summary, setSummary] = useState("");
+  const [who, setWho] = useState("");
+  const [location, setLocation] = useState("");
+  const [open, setOpen] = useState(true);
+  const committedRef = useRef(false);
+  const attendees = parseAttendeeInput(who);
+  const hasContent =
+    summary.trim() !== "" || location.trim() !== "" || attendees.length > 0;
+
+  async function commit() {
+    if (committedRef.current || !hasContent) return;
+    committedRef.current = true;
+    setOpen(false);
+    try {
+      await onCommit({ summary, location, attendees });
+    } catch (err) {
+      committedRef.current = false;
+      setOpen(true);
+      console.error("draft create failed", err);
+    }
+  }
+
+  function submitOnEnter(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (hasContent) void commit();
+    else {
+      setOpen(false);
+      onDismiss();
+    }
+  }
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(open) => {
+        if (open) {
+          if (!committedRef.current) setOpen(true);
+          return;
+        }
+        if (hasContent) {
+          void commit();
+        } else {
+          setOpen(false);
+          onDismiss();
+        }
+      }}
+    >
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        collisionPadding={12}
+        className="w-[min(680px,calc(100vw-32px))] overflow-hidden rounded-lg p-0 text-sm"
+      >
+        <div
+          className="bg-card text-card-foreground"
+          onKeyDownCapture={(e) => {
+            if (e.key !== "Enter") return;
+            const target = e.target as HTMLElement | null;
+            if (target?.tagName !== "INPUT") return;
+            e.preventDefault();
+            if (hasContent) void commit();
+            else onDismiss();
+          }}
+        >
+          <div className="flex h-9 items-center justify-between bg-muted/50 px-4">
+            <span className="text-base text-muted-foreground">=</span>
+            <button
+              type="button"
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              onClick={() => {
+                if (hasContent) void commit();
+                else {
+                  setOpen(false);
+                  onDismiss();
+                }
+              }}
+              aria-label="Close"
+            >
+              x
+            </button>
+          </div>
+          <div className="space-y-4 px-8 pb-6 pt-5">
+            <Input
+              autoFocus
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              onKeyDown={submitOnEnter}
+              placeholder="what?"
+              className="h-12 rounded-none border-0 border-b bg-transparent px-0 text-3xl font-normal shadow-none placeholder:text-muted-foreground/45 focus-visible:ring-0"
+            />
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
+                Event
+              </span>
+              {["Task", "Out of office", "Focus time", "Working location"].map(
+                (label) => (
+                  <span
+                    key={label}
+                    className="px-2 py-2 text-sm font-medium text-muted-foreground"
+                  >
+                    {label}
+                  </span>
+                ),
+              )}
+            </div>
+            <div className="grid grid-cols-[24px_1fr] items-center gap-x-4 gap-y-3">
+              <ClockIcon />
+              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+                {new Date(draft.start).toLocaleDateString(undefined, {
+                  weekday: "long",
+                  month: "long",
+                  day: "numeric",
+                })}{" "}
+                {formatTime(draft.start)} - {formatTime(draft.end)}
+              </div>
+              <PeopleIcon />
+              <Input
+                value={who}
+                onChange={(e) => setWho(e.target.value)}
+                onKeyDown={submitOnEnter}
+                placeholder="who?"
+                className="h-9 border-0 bg-transparent px-0 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
+              />
+              <LocationPinIcon />
+              <Input
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                onKeyDown={submitOnEnter}
+                placeholder="where?"
+                className="h-9 border-0 bg-transparent px-0 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
+              />
+              <CalendarTinyIcon />
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span>{draft.calendarName}</span>
+                <span
+                  aria-hidden
+                  className="h-3 w-3 rounded-full"
+                  style={{ backgroundColor: draft.backgroundColor }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function parseAttendeeInput(value: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const token of value.split(/[\s,;]+/)) {
+    const email = token.trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
+const DraftEventBlock = forwardRef<
+  HTMLButtonElement,
+  {
+    draft: DraftCalendarEvent;
+    topPx: number;
+    heightPx: number;
+  }
+>(function DraftEventBlock({ draft, topPx, heightPx }, ref) {
+  const showStacked = heightPx >= 34;
+  const time = formatTimeRange(draft.start, draft.end);
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className={`absolute left-1 right-1 flex overflow-hidden rounded px-1.5 py-0.5 text-left text-[11px] leading-tight shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        showStacked ? "flex-col items-start" : "items-center gap-1"
+      }`}
+      style={{
+        top: `${topPx}px`,
+        height: `${heightPx}px`,
+        zIndex: 20,
+        backgroundColor: draft.backgroundColor,
+        color: draft.foregroundColor,
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <span className="max-w-full truncate font-medium">
+        {draft.summary?.trim() || "Add title"}
+      </span>
+      <span className="max-w-full truncate opacity-80">
+        {showStacked ? time : `, ${time}`}
+      </span>
+    </button>
+  );
+});
+
 function DayColumn({
   dayStart,
   dayIndex,
   positioned,
+  workingLocations,
   totalHeightPx,
   onCreateEvent,
+  draftEvent,
+  onDraftDismiss,
+  onDraftCommit,
   drag,
   draggedRow,
   suppressClickRef,
   onEventPointerDown,
   onEventPointerMove,
   onEventPointerUp,
+  createdEventId,
+  onCreateDismiss,
 }: {
   dayStart: Date;
   dayIndex: number;
   positioned: Positioned[];
+  workingLocations: EventRow[];
   totalHeightPx: number;
   onCreateEvent: ((args: CreateEventArgs) => void) | null;
+  draftEvent: DraftCalendarEvent | null;
+  onDraftDismiss: () => void;
+  onDraftCommit: (fields: DraftCommitFields) => Promise<void>;
   drag: DragState | null;
   draggedRow: EventRow | null;
   suppressClickRef: React.MutableRefObject<Set<string>>;
@@ -638,6 +1120,8 @@ function DayColumn({
   ) => void;
   onEventPointerMove: (e: React.PointerEvent<HTMLElement>) => void;
   onEventPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
+  createdEventId: Id<"events"> | null;
+  onCreateDismiss: () => void;
 }) {
   const isToday = sameDay(dayStart, new Date());
   const dayStartMs = dayStart.getTime();
@@ -652,6 +1136,18 @@ function DayColumn({
     return Math.round(ms / SNAP_MS) * SNAP_MS;
   }
 
+  function createSelectionFromOffsets(aOffsetY: number, bOffsetY: number) {
+    const aMs = snapMsFromOffsetY(aOffsetY);
+    const bMs = snapMsFromOffsetY(bOffsetY);
+    let startMs = Math.min(aMs, bMs);
+    let endMs = Math.max(aMs, bMs);
+    if (endMs - startMs < MIN_EVENT_MS) {
+      endMs = Math.min(86400_000, startMs + MIN_EVENT_MS);
+      startMs = Math.max(0, endMs - MIN_EVENT_MS);
+    }
+    return { startMs, endMs };
+  }
+
   function beginCreate(e: React.PointerEvent<HTMLDivElement>) {
     if (!columnRef.current?.contains(e.target as Node)) return;
     if (!onCreateEvent) return;
@@ -659,10 +1155,12 @@ function DayColumn({
     const rect = columnRef.current?.getBoundingClientRect();
     if (!rect) return;
     const offsetY = e.clientY - rect.top;
+    const defaultEndOffsetY =
+      offsetY + (MIN_EVENT_MS / 86400_000) * totalHeightPx;
     const state: CreateDragState = {
       pointerStartY: offsetY,
-      currentOffsetY: offsetY,
-      active: false,
+      currentOffsetY: defaultEndOffsetY,
+      active: true,
       pointerId: e.pointerId,
     };
     createDragRef.current = state;
@@ -678,9 +1176,6 @@ function DayColumn({
     const rect = columnRef.current?.getBoundingClientRect();
     if (!rect) return;
     const offsetY = e.clientY - rect.top;
-    if (!s.active && Math.abs(offsetY - s.pointerStartY) < DRAG_THRESHOLD_PX) {
-      return;
-    }
     const next: CreateDragState = {
       ...s,
       active: true,
@@ -698,12 +1193,11 @@ function DayColumn({
     } catch {}
     createDragRef.current = null;
     setCreateDrag(null);
-    if (!s.active || !onCreateEvent) return;
-    const aMs = snapMsFromOffsetY(s.pointerStartY);
-    const bMs = snapMsFromOffsetY(s.currentOffsetY);
-    const startMs = Math.min(aMs, bMs);
-    let endMs = Math.max(aMs, bMs);
-    if (endMs - startMs < MIN_EVENT_MS) endMs = startMs + MIN_EVENT_MS;
+    if (!onCreateEvent) return;
+    const { startMs, endMs } = createSelectionFromOffsets(
+      s.pointerStartY,
+      s.currentOffsetY,
+    );
     onCreateEvent({ start: dayStartMs + startMs, end: dayStartMs + endMs });
   }
 
@@ -715,15 +1209,18 @@ function DayColumn({
 
   const createPreview = (() => {
     if (!createDrag?.active) return null;
-    const aMs = snapMsFromOffsetY(createDrag.pointerStartY);
-    const bMs = snapMsFromOffsetY(createDrag.currentOffsetY);
-    const startMs = Math.min(aMs, bMs);
-    let endMs = Math.max(aMs, bMs);
-    if (endMs - startMs < MIN_EVENT_MS) endMs = startMs + MIN_EVENT_MS;
+    const { startMs, endMs } = createSelectionFromOffsets(
+      createDrag.pointerStartY,
+      createDrag.currentOffsetY,
+    );
     const topPx = (startMs / 86400_000) * totalHeightPx;
     const heightPx = ((endMs - startMs) / 86400_000) * totalHeightPx;
     return { topPx, heightPx, startMs, endMs };
   })();
+
+  const draftSegment = draftEvent
+    ? clippedTimedSegment(draftEvent.start, draftEvent.end, dayStartMs, dayEndMs)
+    : null;
 
   return (
     <div
@@ -758,6 +1255,58 @@ function DayColumn({
           {formatTime(dayStartMs + createPreview.endMs)}
         </div>
       )}
+      {workingLocations.map((row) => {
+        const segment = clippedTimedSegment(
+          row.event.start,
+          row.event.end,
+          dayStartMs,
+          dayEndMs,
+        );
+        if (!segment) return null;
+        const topPx =
+          ((segment.startMs - dayStartMs) / 86400_000) * totalHeightPx;
+        const heightPx = Math.max(
+          ((segment.endMs - segment.startMs) / 86400_000) * totalHeightPx,
+          18,
+        );
+        return (
+          <div
+            key={`${dayStart.getTime()}-${row.event._id}-working-location`}
+            className="pointer-events-none absolute left-1 right-1 flex items-start gap-1 border-l-4 bg-background/75 px-1 py-0.5 text-[11px] font-medium leading-tight"
+            style={{
+              top: `${topPx}px`,
+              height: `${heightPx}px`,
+              borderColor: eventColor(row),
+              color: eventColor(row),
+              zIndex: 2,
+            }}
+            title={`${eventKindLabel(row)}: ${row.event.summary} · ${formatTimeRange(row.event.start, row.event.end)}`}
+          >
+            <BuildingIcon className="mt-0.5 size-3 shrink-0" />
+            <span className="truncate">{row.event.summary}</span>
+          </div>
+        );
+      })}
+      {draftEvent && draftSegment && (
+        <DraftEventPopover
+          draft={draftEvent}
+          onDismiss={onDraftDismiss}
+          onCommit={onDraftCommit}
+        >
+          <DraftEventBlock
+            draft={draftEvent}
+            topPx={
+              ((draftSegment.startMs - dayStartMs) / 86400_000) *
+              totalHeightPx
+            }
+            heightPx={Math.max(
+              ((draftSegment.endMs - draftSegment.startMs) / 86400_000) *
+                totalHeightPx,
+              24,
+            )}
+          />
+        </DraftEventPopover>
+      )}
       {positioned.map((p) => {
         const widthPct = (p.span / p.lanes) * 100;
         const leftPct = (p.lane / p.lanes) * 100;
@@ -789,10 +1338,17 @@ function DayColumn({
             }).stopImmediatePropagation?.();
           }
         };
+        const isNewlyCreated =
+          createdEventId !== null && p.row.event._id === createdEventId;
         return (
           <EventPopover
             key={`${dayStart.getTime()}-${p.row.event._id}`}
             row={p.row}
+            open={isNewlyCreated ? true : undefined}
+            onOpenChange={
+              isNewlyCreated ? (o) => !o && onCreateDismiss() : undefined
+            }
+            defaultEditing={isNewlyCreated}
           >
             <button
               type="button"
@@ -823,23 +1379,23 @@ function DayColumn({
                 width: `calc(${widthPct}% - 4px)`,
                 backgroundColor: task || workingLocation
                     ? "transparent"
-                    : p.row.calendar.backgroundColor,
+                    : eventColor(p.row),
                 borderColor:
-                  workingLocation ? p.row.calendar.backgroundColor : undefined,
+                  workingLocation ? eventColor(p.row) : undefined,
                 color:
                   task || workingLocation
-                    ? p.row.calendar.backgroundColor
-                    : p.row.calendar.foregroundColor,
+                    ? eventColor(p.row)
+                    : eventTextColor(p.row),
                 touchAction: writable ? "none" : undefined,
                 opacity: hideForDrag ? 0 : 1,
                 pointerEvents: hideForDrag ? "none" : undefined,
               }}
-              title={`${eventKindLabel(p.row)}: ${p.row.event.summary} · ${formatTime(p.row.event.start)}`}
+              title={`${eventKindLabel(p.row)}: ${p.row.event.summary} · ${formatTimeRange(p.row.event.start, p.row.event.end)}`}
             >
               {task && (
                 <TaskCheckbox
                   className="mt-0.5 size-3 shrink-0"
-                  color={p.row.calendar.backgroundColor}
+                  color={eventColor(p.row)}
                 />
               )}
               {workingLocation && (
@@ -851,13 +1407,13 @@ function DayColumn({
                   {showInlineTime && !task && !workingLocation && (
                     <span className="font-normal opacity-80">
                       {" · "}
-                      {formatTime(p.row.event.start)}
+                      {formatTimeRange(p.row.event.start, p.row.event.end)}
                     </span>
                   )}
                 </div>
                 {showStackedTime && !task && !workingLocation && (
                   <div className="w-full truncate opacity-80">
-                    {formatTime(p.row.event.start)}
+                    {formatTimeRange(p.row.event.start, p.row.event.end)}
                   </div>
                 )}
               </div>
@@ -932,6 +1488,7 @@ function DragGhost({
     durationMs = newEnd - drag.originalStart;
     displayStart = drag.originalStart;
   }
+  const displayEnd = displayStart + durationMs;
   const topPx = (startInDayMs / 86400_000) * totalHeightPx;
   const heightPx = Math.max((durationMs / 86400_000) * totalHeightPx, 14);
   const showStackedTime = heightPx >= 32;
@@ -942,8 +1499,8 @@ function DragGhost({
       style={{
         top: `${topPx}px`,
         height: `${heightPx}px`,
-        backgroundColor: row.calendar.backgroundColor,
-        color: row.calendar.foregroundColor,
+        backgroundColor: eventColor(row),
+        color: eventTextColor(row),
         opacity: 0.92,
       }}
     >
@@ -952,13 +1509,13 @@ function DragGhost({
         {showInlineTime && (
           <span className="font-normal opacity-80">
             {" · "}
-            {formatTime(displayStart)}
+            {formatTimeRange(displayStart, displayEnd)}
           </span>
         )}
       </div>
       {showStackedTime && (
         <div className="w-full truncate opacity-80">
-          {formatTime(displayStart)}
+          {formatTimeRange(displayStart, displayEnd)}
         </div>
       )}
     </div>
@@ -1028,6 +1585,80 @@ function BuildingIcon({ className }: { className: string }) {
       <path d="M6.5 8.25h.01" />
       <path d="M9.5 8.25h.01" />
       <path d="M3 13.5h10" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className="h-5 w-5 text-muted-foreground"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M8 4.75V8l2.25 1.5" />
+    </svg>
+  );
+}
+
+function PeopleIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className="h-5 w-5 text-muted-foreground"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M6.5 8.25a2.75 2.75 0 1 0 0-5.5 2.75 2.75 0 0 0 0 5.5Z" />
+      <path d="M1.75 13.25c.6-2.25 2.2-3.5 4.75-3.5s4.15 1.25 4.75 3.5" />
+      <path d="M11 4.25a2.25 2.25 0 0 1 0 4.25" />
+      <path d="M11.75 9.75c1.4.45 2.25 1.55 2.5 3.25" />
+    </svg>
+  );
+}
+
+function LocationPinIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className="h-5 w-5 text-muted-foreground"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M8 14s4.75-4.25 4.75-8A4.75 4.75 0 0 0 3.25 6C3.25 9.75 8 14 8 14Z" />
+      <circle cx="8" cy="6" r="1.5" />
+    </svg>
+  );
+}
+
+function CalendarTinyIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden
+      className="h-5 w-5 text-muted-foreground"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="2.5" y="3.5" width="11" height="10" rx="1.5" />
+      <path d="M2.5 6.5h11M5.5 2.5v2M10.5 2.5v2" />
     </svg>
   );
 }

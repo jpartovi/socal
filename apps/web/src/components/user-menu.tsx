@@ -81,6 +81,12 @@ export function UserMenu() {
         >
           Calendar accounts
         </DropdownMenuItem>
+        <DropdownMenuItem
+          onSelect={() => router.push("/keyboard-shortcuts")}
+          className="rounded-xl"
+        >
+          Keyboard shortcuts
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={handleSignOut} className="rounded-xl">
           Log out
         </DropdownMenuItem>

@@ -112,6 +112,7 @@ export default defineSchema({
     ),
     htmlLink: v.optional(v.string()),
     updatedAt: v.number(),
+    colorOverride: v.optional(v.string()),
     eventKind: v.optional(
       v.union(v.literal("event"), v.literal("workingLocation"), v.literal("task")),
     ),

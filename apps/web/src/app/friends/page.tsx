@@ -50,7 +50,7 @@ function FriendsContent() {
         </Section>
       )}
       <Section label="Friends">
-        <FriendList friends={data.friends} />
+        <FriendList userId={userId} friends={data.friends} />
       </Section>
     </section>
   );
@@ -170,6 +170,8 @@ type ConnectionEntry = {
     lastName: string;
     phoneNumber: string;
   };
+  iAllowFriend: boolean;
+  friendAllowsMe: boolean;
 };
 
 function Row({ children }: { children: React.ReactNode }) {
@@ -230,7 +232,14 @@ function IncomingList({
   );
 }
 
-function FriendList({ friends }: { friends: ConnectionEntry[] }) {
+function FriendList({
+  userId,
+  friends,
+}: {
+  userId: Id<"users">;
+  friends: ConnectionEntry[];
+}) {
+  const setAgentAccess = useMutation(api.friendships.setAgentAccess);
   if (friends.length === 0) {
     return (
       <p className="px-1 text-sm text-muted-foreground">No friends yet.</p>
@@ -239,11 +248,35 @@ function FriendList({ friends }: { friends: ConnectionEntry[] }) {
   return (
     <List>
       {friends.map((entry) => (
-        <Row key={entry.friendshipId}>
-          <span className="min-w-0 truncate text-base">
-            {entry.user.firstName} {entry.user.lastName}
-          </span>
-        </Row>
+        <li
+          key={entry.friendshipId}
+          className="flex items-center justify-between gap-3 px-4 py-3"
+        >
+          <div className="flex min-w-0 flex-col">
+            <span className="min-w-0 truncate text-base">
+              {entry.user.firstName} {entry.user.lastName}
+            </span>
+            {!entry.friendAllowsMe && (
+              <span className="text-xs text-muted-foreground">
+                Not sharing their calendar with you
+              </span>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant={entry.iAllowFriend ? "secondary" : "ghost"}
+            className="h-8 shrink-0 rounded-xl px-3 text-xs"
+            onClick={() =>
+              setAgentAccess({
+                userId,
+                otherUserId: entry.user._id,
+                allow: !entry.iAllowFriend,
+              })
+            }
+          >
+            {entry.iAllowFriend ? "Sharing calendar" : "Share calendar"}
+          </Button>
+        </li>
       ))}
     </List>
   );

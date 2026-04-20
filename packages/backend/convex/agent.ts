@@ -12,8 +12,12 @@ import { buildSystemPrompt } from "./agentCore/prompts/build.js";
 import { makeCalendarTools } from "./agentCore/tools/index.js";
 
 const agentRunResult = v.union(
-  v.object({ ok: v.literal(true) }),
-  v.object({ ok: v.literal(false), reason: v.string() }),
+  v.object({ status: v.literal("completed") }),
+  v.object({
+    status: v.literal("no_action"),
+    message: v.optional(v.string()),
+  }),
+  v.object({ status: v.literal("error"), reason: v.string() }),
 );
 
 export const run = action({

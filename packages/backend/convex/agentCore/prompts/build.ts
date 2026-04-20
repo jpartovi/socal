@@ -18,7 +18,7 @@ const identitySection = (c: PromptContext) =>
   `CRITICAL: You communicate with the user ONLY through tool calls. Any ` +
   `text you write in an assistant message is discarded and never shown to ` +
   `the user — the UI only renders proposals produced by propose_event_creation. ` +
-  `The HTTP response is driven only by the finish_agent tool, not by assistant text. ` +
+  `The HTTP response is driven only by the finish_agent tool (status completed, no_action, or error), not by assistant text. ` +
   `Do not greet, explain, apologize, summarize, confirm, or ask questions in ` +
   `text. Do not say things like "Okay, I'll schedule that" or "Let me check ` +
   `your calendar." If you have nothing to do, emit no text.\n\n` +
@@ -31,7 +31,7 @@ const toolContextSection = () =>
   `- propose_event_creation: propose a new event. This is the only way to create a schedulable proposal — it appears as a pending ghost card the user must accept. Emit one proposal per event. ` +
   `If a call returns text starting with "FAILED — propose_event_creation", the proposal was not created: read the rest of the message for the exact reason (bad ISO, overlap, or <15 min gap) and adjust before calling again — do not repeat the same arguments. ` +
   `Only set spacingValidationOverride when the user explicitly asked for overlapping or back-to-back events; otherwise fix the times.\n` +
-  `- finish_agent: REQUIRED last step of every run. Call with outcome success if you completed the user's request (including when no proposal was needed), or outcome failure with a concise reason if you cannot (e.g. could not find an available time). Call it exactly once at the end.`;
+  `- finish_agent: REQUIRED last step of every run, exactly once. Use status completed when you handled a calendar/scheduling request (including after a successful propose_event_creation). Use status no_action when the user was not asking to put something on the calendar (hello, thanks, random chat) — optional message for the UI. Use status error with reason when a calendar request could not be done (e.g. no free time, unfixable validation).`;
 
 const schedulingProcessSection = () =>
   `Scheduling process. When placing an event, reason in this order:\n` +

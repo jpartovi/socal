@@ -7,9 +7,9 @@ import { useState, type KeyboardEvent } from "react";
 import { useAuth } from "@/lib/auth";
 
 // Calendar agent entrypoint at the bottom of the home page. Sends the typed
-// message to api.agent.run. The agent never replies in text — it acts via
-// tool calls that surface as proposals on the calendar — so we only surface
-// errors here, not an agent response.
+// message to api.agent.run. The agent only acts via tools; structured failure
+// reasons come back on result.ok === false, while thrown errors are transport
+// or server failures.
 export function AgentInput() {
   const { userId } = useAuth();
   const runAgent = useAction(api.agent.run);
@@ -23,7 +23,11 @@ export function AgentInput() {
     setIsPending(true);
     setError(null);
     try {
-      await runAgent({ userId, message: text });
+      const result = await runAgent({ userId, message: text });
+      if (!result.ok) {
+        setError(result.reason);
+        return;
+      }
       setValue("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

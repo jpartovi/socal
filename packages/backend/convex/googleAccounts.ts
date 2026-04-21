@@ -1,10 +1,35 @@
 import { ConvexError, v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
   mutation,
   query,
 } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+
+type ReadCtx = QueryCtx | MutationCtx;
+
+/** Prefer users.primaryGoogleAccountId; else first googleAccounts row for user. */
+export async function resolvePrimaryGoogleAccountForUser(
+  ctx: ReadCtx,
+  userId: Id<"users">,
+): Promise<Doc<"googleAccounts"> | null> {
+  const user = await ctx.db.get(userId);
+  if (user === null) return null;
+  const preferredId = user.primaryGoogleAccountId;
+  if (preferredId !== undefined) {
+    const acc = await ctx.db.get(preferredId);
+    if (acc !== null && acc.userId === userId) {
+      return acc;
+    }
+  }
+  const accounts = await ctx.db
+    .query("googleAccounts")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  return accounts[0] ?? null;
+}
 
 const googleAccountSummary = v.object({
   _id: v.id("googleAccounts"),
@@ -13,6 +38,54 @@ const googleAccountSummary = v.object({
   name: v.optional(v.string()),
   pictureUrl: v.optional(v.string()),
   connectedAt: v.number(),
+});
+
+const primaryGoogleAccountPublic = v.object({
+  _id: v.id("googleAccounts"),
+  email: v.string(),
+  name: v.optional(v.string()),
+  pictureUrl: v.optional(v.string()),
+});
+
+export const getPrimaryForUser = query({
+  args: { userId: v.id("users") },
+  returns: v.union(primaryGoogleAccountPublic, v.null()),
+  handler: async (ctx, args) => {
+    const acc = await resolvePrimaryGoogleAccountForUser(ctx, args.userId);
+    if (acc === null) return null;
+    return {
+      _id: acc._id,
+      email: acc.email,
+      name: acc.name,
+      pictureUrl: acc.pictureUrl,
+    };
+  },
+});
+
+export const setPrimaryGoogleAccount = mutation({
+  args: {
+    userId: v.id("users"),
+    googleAccountId: v.union(v.id("googleAccounts"), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.db.get(args.userId);
+    if (user === null) {
+      throw new ConvexError("User not found");
+    }
+    if (args.googleAccountId === null) {
+      await ctx.db.patch(args.userId, { primaryGoogleAccountId: undefined });
+      return null;
+    }
+    const acc = await ctx.db.get(args.googleAccountId);
+    if (acc === null || acc.userId !== args.userId) {
+      throw new ConvexError("Google account not found for this user");
+    }
+    await ctx.db.patch(args.userId, {
+      primaryGoogleAccountId: args.googleAccountId,
+    });
+    return null;
+  },
 });
 
 export const listByUser = query({
@@ -91,7 +164,7 @@ export const upsertFromOAuth = mutation({
       return existing._id;
     }
 
-    return await ctx.db.insert("googleAccounts", {
+    const newId = await ctx.db.insert("googleAccounts", {
       userId: args.userId,
       googleSub: args.googleSub,
       email: args.email,
@@ -103,6 +176,10 @@ export const upsertFromOAuth = mutation({
       scope: args.scope,
       connectedAt: Date.now(),
     });
+    if (user.primaryGoogleAccountId === undefined) {
+      await ctx.db.patch(args.userId, { primaryGoogleAccountId: newId });
+    }
+    return newId;
   },
 });
 
@@ -179,6 +256,10 @@ export const disconnect = mutation({
         q.eq("googleAccountId", args.accountId),
       )
       .collect();
+    const user = await ctx.db.get(args.userId);
+    if (user?.primaryGoogleAccountId === args.accountId) {
+      await ctx.db.patch(args.userId, { primaryGoogleAccountId: undefined });
+    }
     for (const cal of calendars) {
       await ctx.db.delete(cal._id);
     }

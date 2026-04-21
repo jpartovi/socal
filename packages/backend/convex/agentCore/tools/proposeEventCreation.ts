@@ -22,6 +22,7 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
         allDay: args.allDay,
         location: args.location,
         calendarId: args.calendarId,
+        googleAccountEmail: args.googleAccountEmail,
         spacingValidationOverride: args.spacingValidationOverride,
       });
       const start = Date.parse(args.startIso);
@@ -59,14 +60,23 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           return `FAILED — propose_event_creation: ${spacingErr}`;
         }
       }
-      const calendarId =
-        (args.calendarId as Id<"calendars"> | undefined) ??
-        (await ctx.runQuery(api.calendars.defaultWritable, { userId }));
-      if (!calendarId) {
-        return (
-          "FAILED — propose_event_creation: no writable calendar is connected for this user. " +
-          "No proposal was created."
-        );
+      let calendarId: Id<"calendars"> | null = null;
+      if (args.calendarId) {
+        calendarId = args.calendarId as Id<"calendars">;
+      } else {
+        const email = args.googleAccountEmail?.trim();
+        const cal = await ctx.runQuery(api.calendars.writableCalendarForUser, {
+          userId,
+          accountEmail: email ? email : undefined,
+        });
+        calendarId = cal?._id ?? null;
+        if (!calendarId) {
+          return email
+            ? "FAILED — propose_event_creation: no connected Google account matches that email " +
+                "(use the exact address from Calendar accounts). No proposal was created."
+            : "FAILED — propose_event_creation: no writable calendar is connected for this user. " +
+                "No proposal was created.";
+        }
       }
       const proposalId = await ctx.runMutation(api.proposals.create, {
         userId,
@@ -126,7 +136,13 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           .string()
           .optional()
           .describe(
-            "Optional Convex calendar id. Leave unset to use the user's default writable calendar.",
+            "Optional Convex calendar id. If set, wins over googleAccountEmail.",
+          ),
+        googleAccountEmail: z
+          .string()
+          .optional()
+          .describe(
+            "Connected Google account email; resolves like writableCalendarForUser with accountEmail (primary writable on that account). Omit with calendarId; if both omitted, uses default Google account (same as quick-create).",
           ),
         spacingValidationOverride: z
           .boolean()

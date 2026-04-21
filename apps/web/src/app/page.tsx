@@ -212,11 +212,11 @@ function CalendarHome() {
   const syncUser = useAction(api.events.syncUser);
   const patchEventTimes = useAction(api.events.patchEventTimes);
   const createEvent = useAction(api.events.createEvent);
-  const defaultCalendar = useQuery(
-    api.calendars.defaultWritableCalendar,
+  const writableCalendar = useQuery(
+    api.calendars.writableCalendarForUser,
     userId ? { userId } : "skip",
   );
-  const defaultCalendarId = defaultCalendar?._id ?? null;
+  const writableCalendarId = writableCalendar?._id ?? null;
 
   const onMoveEvent = useCallback(
     async (args: {
@@ -267,21 +267,22 @@ function CalendarHome() {
 
   const onCreateEvent = useCallback(
     (args: { start: number; end: number }) => {
-      if (!defaultCalendar) return;
+      if (!writableCalendar) return;
       setCreatedEventId(null);
       setCommittedDraftEventId(null);
       setDraftEvent({
         id: `draft-${args.start}-${args.end}-${Date.now()}`,
-        calendarId: defaultCalendar._id,
-        calendarName: defaultCalendar.summaryOverride ?? defaultCalendar.summary,
+        calendarId: writableCalendar._id,
+        calendarName:
+          writableCalendar.summaryOverride ?? writableCalendar.summary,
         backgroundColor:
-          defaultCalendar.colorOverride ?? defaultCalendar.backgroundColor,
-        foregroundColor: defaultCalendar.foregroundColor,
+          writableCalendar.colorOverride ?? writableCalendar.backgroundColor,
+        foregroundColor: writableCalendar.foregroundColor,
         start: args.start,
         end: args.end,
       });
     },
-    [defaultCalendar],
+    [writableCalendar],
   );
 
   const commitDraftEvent = useCallback(
@@ -442,14 +443,14 @@ function CalendarHome() {
           anchor={effectiveAnchor}
           numDays={numDaysFor(view)}
           onMoveEvent={onMoveEvent}
-          onCreateEvent={defaultCalendarId ? onCreateEvent : null}
+          onCreateEvent={writableCalendarId ? onCreateEvent : null}
           createEventAppearance={
-            defaultCalendar
+            writableCalendar
               ? {
                   backgroundColor:
-                    defaultCalendar.colorOverride ??
-                    defaultCalendar.backgroundColor,
-                  foregroundColor: defaultCalendar.foregroundColor,
+                    writableCalendar.colorOverride ??
+                    writableCalendar.backgroundColor,
+                  foregroundColor: writableCalendar.foregroundColor,
                 }
               : null
           }

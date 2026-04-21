@@ -3,6 +3,12 @@
 import { api } from "@socal/backend/convex/_generated/api";
 import type { Id } from "@socal/backend/convex/_generated/dataModel";
 import { Button } from "@socal/ui/components/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@socal/ui/components/dropdown-menu";
 import { useMutation, useQuery } from "convex/react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -38,8 +44,19 @@ function CalendarAccountsContent() {
     api.googleAccounts.listByUser,
     userId ? { userId } : "skip",
   );
+  const user = useQuery(
+    api.users.getById,
+    userId ? { userId } : "skip",
+  );
+  const primaryAccount = useQuery(
+    api.googleAccounts.getPrimaryForUser,
+    userId ? { userId } : "skip",
+  );
 
-  if (!userId || !accounts) return null;
+  if (!userId || !accounts || user === undefined) return null;
+
+  const effectivePrimaryId: Id<"googleAccounts"> | undefined =
+    user.primaryGoogleAccountId ?? primaryAccount?._id;
 
   return (
     <section className="mx-auto flex w-full max-w-md flex-col gap-8 px-6 py-6">
@@ -64,7 +81,14 @@ function CalendarAccountsContent() {
       ) : (
         <ul className="flex flex-col gap-2">
           {accounts.map((acc) => (
-            <AccountRow key={acc._id} userId={userId} account={acc} />
+            <AccountRow
+              key={acc._id}
+              userId={userId}
+              account={acc}
+              isPrimary={
+                effectivePrimaryId !== undefined && acc._id === effectivePrimaryId
+              }
+            />
           ))}
         </ul>
       )}
@@ -92,15 +116,31 @@ type AccountSummary = {
 function AccountRow({
   userId,
   account,
+  isPrimary,
 }: {
   userId: Id<"users">;
   account: AccountSummary;
+  isPrimary: boolean;
 }) {
   const disconnect = useMutation(api.googleAccounts.disconnect);
+  const setPrimaryGoogleAccount = useMutation(
+    api.googleAccounts.setPrimaryGoogleAccount,
+  );
 
   return (
-    <li className="flex items-center justify-between gap-3 rounded-2xl border px-4 py-3">
-      <div className="flex min-w-0 flex-col">
+    <li className="flex items-center gap-2 rounded-2xl border px-3 py-3">
+      <span className="flex w-8 shrink-0 justify-center">
+        {isPrimary ? (
+          <span
+            title="Default Google account — assistant proposals, quick-create, and friend calendar invites use this account"
+            className="text-amber-500 dark:text-amber-400"
+            aria-hidden
+          >
+            <StarFilledIcon className="h-4 w-4" />
+          </span>
+        ) : null}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-medium">{account.email}</span>
         {account.name && (
           <span className="truncate text-xs text-muted-foreground">
@@ -108,14 +148,66 @@ function AccountRow({
           </span>
         )}
       </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-8 shrink-0 rounded-xl px-3 text-muted-foreground"
-        onClick={() => disconnect({ userId, accountId: account._id })}
-      >
-        Disconnect
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 w-8 shrink-0 rounded-xl p-0 text-muted-foreground"
+            aria-label="Account options"
+          >
+            <MoreHorizontalIcon className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-44">
+          {!isPrimary ? (
+            <DropdownMenuItem
+              onClick={() =>
+                setPrimaryGoogleAccount({
+                  userId,
+                  googleAccountId: account._id,
+                })
+              }
+            >
+              Make default
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => disconnect({ userId, accountId: account._id })}
+          >
+            Disconnect
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </li>
+  );
+}
+
+function StarFilledIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      className={className}
+      aria-hidden
+    >
+      <path d="M8 1.5l1.85 3.76 4.15.6-3 2.92.71 4.14L8 11.9l-3.71 1.95.71-4.14-3-2.92 4.15-.6L8 1.5z" />
+    </svg>
+  );
+}
+
+function MoreHorizontalIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      className={className}
+      aria-hidden
+    >
+      <circle cx="3" cy="8" r="1.5" />
+      <circle cx="8" cy="8" r="1.5" />
+      <circle cx="13" cy="8" r="1.5" />
+    </svg>
   );
 }

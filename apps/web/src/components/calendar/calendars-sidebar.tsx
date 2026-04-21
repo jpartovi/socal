@@ -26,9 +26,34 @@ import {
 import { useAuth } from "@/lib/auth";
 
 const SIDEBAR_WIDTH_KEY = "socal.sidebarWidth";
+const CALENDAR_GROUP_COLLAPSED_KEY = "socal.calendarSidebar.collapsedGroups";
 const SIDEBAR_MIN_WIDTH = 200;
 const SIDEBAR_MAX_WIDTH = 480;
 const SIDEBAR_DEFAULT_WIDTH = 256;
+
+function readCollapsedGroupKeys(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = window.localStorage.getItem(CALENDAR_GROUP_COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedGroupKeys(keys: Set<string>) {
+  try {
+    window.localStorage.setItem(
+      CALENDAR_GROUP_COLLAPSED_KEY,
+      JSON.stringify([...keys]),
+    );
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 type CalendarRow = {
   _id: Id<"calendars">;
@@ -170,6 +195,7 @@ export function CalendarsSidebar() {
               key={acc._id}
               userId={userId}
               accountId={acc._id}
+              accountEmail={acc.email}
               notify={notify}
             />
           ))
@@ -503,10 +529,12 @@ function errorMessage(error: unknown): string {
 function AccountSection({
   userId,
   accountId,
+  accountEmail,
   notify,
 }: {
   userId: Id<"users">;
   accountId: Id<"googleAccounts">;
+  accountEmail: string;
   notify: (message: string) => void;
 }) {
   const calendars = useQuery(api.calendars.listByAccount, {
@@ -530,8 +558,20 @@ function AccountSection({
   mine.sort(byDisplay);
   others.sort(byDisplay);
 
+  const accountHeadingId = `calendar-account-${accountId}`;
+
   return (
-    <div className="flex flex-col gap-2">
+    <section
+      className="flex flex-col gap-2"
+      aria-labelledby={accountHeadingId}
+    >
+      <h3
+        id={accountHeadingId}
+        className="truncate px-1 text-[11px] font-medium leading-tight text-foreground/90"
+        title={accountEmail}
+      >
+        {accountEmail}
+      </h3>
       {calendars === undefined ? (
         <p className="px-1 text-xs text-muted-foreground">Loading...</p>
       ) : calendars.length === 0 ? (
@@ -543,7 +583,8 @@ function AccountSection({
       ) : (
         <>
           {mine.length > 0 && (
-            <Group
+            <CollapsibleCalendarGroup
+              groupKey={`${accountId}:mine`}
               label="My calendars"
               calendars={mine}
               userId={userId}
@@ -551,7 +592,8 @@ function AccountSection({
             />
           )}
           {others.length > 0 && (
-            <Group
+            <CollapsibleCalendarGroup
+              groupKey={`${accountId}:others`}
               label="Other calendars"
               calendars={others}
               userId={userId}
@@ -560,36 +602,89 @@ function AccountSection({
           )}
         </>
       )}
-    </div>
+    </section>
   );
 }
 
-function Group({
+function CollapsibleCalendarGroup({
+  groupKey,
   label,
   calendars,
   userId,
   notify,
 }: {
+  groupKey: string;
   label: string;
   calendars: CalendarRow[];
   userId: Id<"users">;
   notify: (message: string) => void;
 }) {
+  const [collapsed, setCollapsed] = useState(() =>
+    readCollapsedGroupKeys().has(groupKey),
+  );
+
+  const toggle = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      const keys = readCollapsedGroupKeys();
+      if (next) keys.add(groupKey);
+      else keys.delete(groupKey);
+      writeCollapsedGroupKeys(keys);
+      return next;
+    });
+  };
+
+  const panelId = `calendar-group-${groupKey}`;
+
   return (
     <div className="flex flex-col">
-      <h4 className="px-1 pb-0.5 text-[10px] text-muted-foreground/70">
-        {label}
-      </h4>
-      <ul className="flex flex-col">
-        {calendars.map((c) => (
-          <SidebarRow
-            key={c._id}
-            calendar={c}
-            userId={userId}
-            notify={notify}
-          />
-        ))}
-      </ul>
+      <button
+        type="button"
+        id={`${panelId}-trigger`}
+        onClick={toggle}
+        className="flex w-full items-center gap-1 rounded-md px-0.5 py-1 text-left hover:bg-muted/70"
+        aria-expanded={!collapsed}
+        aria-controls={panelId}
+      >
+        <span
+          aria-hidden
+          className={`inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground transition-transform ${
+            collapsed ? "-rotate-90" : ""
+          }`}
+        >
+          <svg
+            viewBox="0 0 12 12"
+            className="size-3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.8}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M3 4.5 6 7.5 9 4.5" />
+          </svg>
+        </span>
+        <span className="text-[10px] font-medium text-muted-foreground/80">
+          {label}
+        </span>
+      </button>
+      <div
+        id={panelId}
+        role="region"
+        aria-labelledby={`${panelId}-trigger`}
+        hidden={collapsed}
+      >
+        <ul className="flex flex-col">
+          {calendars.map((c) => (
+            <SidebarRow
+              key={c._id}
+              calendar={c}
+              userId={userId}
+              notify={notify}
+            />
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

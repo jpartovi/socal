@@ -9,6 +9,7 @@ export default defineSchema({
     photoStorageId: v.optional(v.id("_storage")),
     useDefaultAvatar: v.optional(v.boolean()),
     timeZone: v.optional(v.string()),
+    primaryGoogleAccountId: v.optional(v.id("googleAccounts")),
   }).index("by_phone_number", ["phoneNumber"]),
 
   // Bidirectional friendships. Each pair is stored exactly once with ids in

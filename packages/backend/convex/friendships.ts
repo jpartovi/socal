@@ -2,6 +2,7 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
+import { resolvePrimaryGoogleAccountForUser } from "./googleAccounts";
 import { normalizePhone } from "./phone";
 
 // Friendships are bidirectional, so we store one row per pair with the
@@ -42,6 +43,7 @@ const friendUserSummary = v.object({
   lastName: v.string(),
   phoneNumber: v.string(),
   photoUrl: v.union(v.string(), v.null()),
+  inviteEmail: v.union(v.string(), v.null()),
 });
 
 const connectionEntry = v.object({
@@ -184,6 +186,13 @@ export const listConnections = query({
       let photoUrl = e.user.photoStorageId
         ? await ctx.storage.getUrl(e.user.photoStorageId)
         : null;
+      const primaryForInvite = await resolvePrimaryGoogleAccountForUser(
+        ctx,
+        e.user._id,
+      );
+      if (photoUrl === null) {
+        photoUrl = primaryForInvite?.pictureUrl ?? null;
+      }
       if (photoUrl === null) {
         const googleAccount = await ctx.db
           .query("googleAccounts")
@@ -200,6 +209,7 @@ export const listConnections = query({
           lastName: e.user.lastName,
           phoneNumber: e.user.phoneNumber,
           photoUrl,
+          inviteEmail: primaryForInvite?.email ?? null,
         },
       };
     };

@@ -9,6 +9,7 @@ export default defineSchema({
     photoStorageId: v.optional(v.id("_storage")),
     useDefaultAvatar: v.optional(v.boolean()),
     timeZone: v.optional(v.string()),
+    primaryGoogleAccountId: v.optional(v.id("googleAccounts")),
   }).index("by_phone_number", ["phoneNumber"]),
 
   // Bidirectional friendships. Each pair is stored exactly once with ids in
@@ -170,6 +171,9 @@ export default defineSchema({
     // Set when status transitions to "accepted" so a future audit/history
     // view can link a proposal to the real event it became.
     createdEventId: v.optional(v.id("events")),
+    // Accepted friends to invite as Google Calendar attendees when the user
+    // accepts (emails re-resolved at accept time from primary Google account).
+    participantFriendUserIds: v.optional(v.array(v.id("users"))),
   })
     .index("by_user_and_status", ["userId", "status"])
     .index("by_calendar_and_start", ["calendarId", "start"]),

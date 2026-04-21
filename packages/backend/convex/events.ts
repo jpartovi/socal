@@ -56,6 +56,10 @@ const resolvedAttendee = v.object({
   organizer: v.optional(v.boolean()),
   photoUrl: v.optional(v.string()),
   socalUserId: v.optional(v.id("users")),
+  // When the viewer (args.userId) has an accepted friendship with socalUserId.
+  friendFirstName: v.optional(v.string()),
+  friendLastName: v.optional(v.string()),
+  friendPhoneNumber: v.optional(v.string()),
 });
 
 const eventDoc = v.object({
@@ -112,7 +116,17 @@ type ResolvedAttendee = {
   organizer?: boolean;
   photoUrl?: string;
   socalUserId?: Id<"users">;
+  friendFirstName?: string;
+  friendLastName?: string;
+  friendPhoneNumber?: string;
 };
+
+function otherFriendUserId(
+  friendship: Doc<"friendships">,
+  viewerId: Id<"users">,
+): Id<"users"> {
+  return friendship.userA === viewerId ? friendship.userB : friendship.userA;
+}
 
 export const listForUserInRange = query({
   args: {
@@ -220,12 +234,58 @@ export const listForUserInRange = query({
       resolved.set(email, { photoUrl, socalUserId: acc.userId });
     }
 
+    const asFriendA = await ctx.db
+      .query("friendships")
+      .withIndex("by_userA_status", (q) =>
+        q.eq("userA", args.userId).eq("status", "accepted"),
+      )
+      .collect();
+    const asFriendB = await ctx.db
+      .query("friendships")
+      .withIndex("by_userB_status", (q) =>
+        q.eq("userB", args.userId).eq("status", "accepted"),
+      )
+      .collect();
+
+    const acceptedFriendIds = new Set<Id<"users">>();
+    for (const f of asFriendA) {
+      acceptedFriendIds.add(otherFriendUserId(f, args.userId));
+    }
+    for (const f of asFriendB) {
+      acceptedFriendIds.add(otherFriendUserId(f, args.userId));
+    }
+
+    const friendProfilesNeeded = new Set<Id<"users">>();
+    for (const r of resolved.values()) {
+      if (r.socalUserId && acceptedFriendIds.has(r.socalUserId)) {
+        friendProfilesNeeded.add(r.socalUserId);
+      }
+    }
+
+    const friendProfileByUserId = new Map<
+      Id<"users">,
+      { firstName: string; lastName: string; phoneNumber: string }
+    >();
+    for (const uid of friendProfilesNeeded) {
+      const user = await ctx.db.get(uid);
+      if (!user) continue;
+      friendProfileByUserId.set(uid, {
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phoneNumber: user.phoneNumber,
+      });
+    }
+
     const results = rawEvents.map(({ event, calendar }) => {
       let enrichedAttendees: ResolvedAttendee[] | undefined;
       if (event.attendees && event.attendees.length > 0) {
         enrichedAttendees = event.attendees.map((a) => {
           const r = resolved.get(a.email.toLowerCase()) ?? {};
-          return {
+          const profile =
+            r.socalUserId !== undefined
+              ? friendProfileByUserId.get(r.socalUserId)
+              : undefined;
+          const base: ResolvedAttendee = {
             email: a.email,
             displayName: a.displayName,
             responseStatus: a.responseStatus,
@@ -234,6 +294,12 @@ export const listForUserInRange = query({
             photoUrl: r.photoUrl,
             socalUserId: r.socalUserId,
           };
+          if (profile) {
+            base.friendFirstName = profile.firstName;
+            base.friendLastName = profile.lastName;
+            base.friendPhoneNumber = profile.phoneNumber;
+          }
+          return base;
         });
       }
       return {

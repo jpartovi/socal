@@ -1,6 +1,7 @@
 "use client";
 
 import { api } from "@socal/backend/convex/_generated/api";
+import { Avatar } from "@socal/ui/components/avatar";
 import {
   Popover,
   PopoverContent,
@@ -12,6 +13,37 @@ import { useEffect, useState, type ReactNode } from "react";
 import { formatTime } from "@/components/calendar/lib";
 import type { ProposalRow } from "@/components/calendar/types";
 import { useAuth } from "@/lib/auth";
+
+type ProposalParticipant = ProposalRow["participants"][number];
+
+function sortProposalParticipants(
+  participants: ProposalParticipant[],
+): ProposalParticipant[] {
+  return [...participants].sort((a, b) => {
+    const ka = `${a.firstName} ${a.lastName}`.trim().toLowerCase();
+    const kb = `${b.firstName} ${b.lastName}`.trim().toLowerCase();
+    return ka.localeCompare(kb);
+  });
+}
+
+function ProposalGuestListItem({ participant: p }: { participant: ProposalParticipant }) {
+  const label = `${p.firstName} ${p.lastName}`.trim();
+  return (
+    <li className="flex items-start gap-2">
+      <Avatar
+        name={label}
+        photoUrl={p.photoUrl ?? undefined}
+        size="sm"
+        className="mt-0.5"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="break-words text-xs font-medium leading-snug">
+          {label}
+        </div>
+      </div>
+    </li>
+  );
+}
 
 // Popover that mirrors EventPopover's read-only body but for agent-proposed
 // events. Trigger can be any element (the ProposalItem ghost card in our
@@ -57,7 +89,7 @@ function ProposalPopoverBody({
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { proposal, calendar } = row;
+  const { proposal, calendar, participants } = row;
   const color = calendar.backgroundColor;
   const accountName = calendar.summaryOverride ?? calendar.summary;
   const timeLabel = formatProposalTimeRange(
@@ -164,6 +196,16 @@ function ProposalPopoverBody({
           <p className="whitespace-pre-wrap break-words text-xs leading-snug text-foreground/80">
             {descriptionText}
           </p>
+        </Row>
+      )}
+
+      {participants.length > 0 && (
+        <Row icon={<PeopleIcon />}>
+          <ul className="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1">
+            {sortProposalParticipants(participants).map((p) => (
+              <ProposalGuestListItem key={p.userId} participant={p} />
+            ))}
+          </ul>
         </Row>
       )}
 
@@ -331,6 +373,25 @@ function CalendarIcon() {
     >
       <rect x="2.5" y="3.5" width="11" height="10" rx="1.5" />
       <path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PeopleIcon() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+    >
+      <path d="M6.5 8.25a2.75 2.75 0 1 0 0-5.5 2.75 2.75 0 0 0 0 5.5Z" />
+      <path d="M1.75 13.25c.6-2.25 2.2-3.5 4.75-3.5s4.15 1.25 4.75 3.5" />
+      <path d="M11 4.25a2.25 2.25 0 0 1 0 4.25" />
+      <path d="M11.75 9.75c1.4.45 2.25 1.55 2.5 3.25" />
     </svg>
   );
 }

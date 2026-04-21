@@ -14,19 +14,14 @@ export default defineSchema({
   // Bidirectional friendships. Each pair is stored exactly once with ids in
   // lexicographic order (userA < userB) so that lookups never need to query
   // both directions. `requesterId` tracks who sent the request; the other
-  // user must accept before `status` flips to "accepted".
+  // user must accept before `status` flips to "accepted". Calendar sharing
+  // is implicit in the friendship — no per-direction toggle.
   friendships: defineTable({
     userA: v.id("users"),
     userB: v.id("users"),
     requesterId: v.id("users"),
     status: v.union(v.literal("pending"), v.literal("accepted")),
     acceptedAt: v.optional(v.number()),
-    // Per-direction calendar visibility. Default-on: undefined/true = the
-    // other party's agent may read this side's calendar; explicit false
-    // means this side has opted out. Friending on a calendar-coordination
-    // app implies consent, so we only persist the opt-outs.
-    userAAllowsAgentAccess: v.optional(v.boolean()),
-    userBAllowsAgentAccess: v.optional(v.boolean()),
   })
     .index("by_pair", ["userA", "userB"])
     .index("by_userA_status", ["userA", "status"])

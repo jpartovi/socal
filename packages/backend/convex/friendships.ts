@@ -34,8 +34,6 @@ const friendshipDoc = v.object({
   requesterId: v.id("users"),
   status: v.union(v.literal("pending"), v.literal("accepted")),
   acceptedAt: v.optional(v.number()),
-  userAAllowsAgentAccess: v.optional(v.boolean()),
-  userBAllowsAgentAccess: v.optional(v.boolean()),
 });
 
 const friendUserSummary = v.object({
@@ -49,12 +47,6 @@ const friendUserSummary = v.object({
 const connectionEntry = v.object({
   friendshipId: v.id("friendships"),
   user: friendUserSummary,
-  // Per-direction agent-access state. `iAllowFriend` = can the friend's
-  // agent read MY calendar. `friendAllowsMe` = can MY agent read theirs.
-  // Only meaningful on accepted friendships — for pending rows we return
-  // true/true for simplicity (the UI ignores them there).
-  iAllowFriend: v.boolean(),
-  friendAllowsMe: v.boolean(),
 });
 
 const phoneInviteEntry = v.object({
@@ -69,20 +61,6 @@ function otherUserId(
   userId: Id<"users">,
 ): Id<"users"> {
   return friendship.userA === userId ? friendship.userB : friendship.userA;
-}
-
-// Whether `ownerId` is sharing their calendar with the other party in this
-// friendship. Default is ON — friending on a calendar app implies consent.
-// Only returns false if the owner has explicitly set their flag to false.
-function ownerAllowsAgentAccess(
-  friendship: Doc<"friendships">,
-  ownerId: Id<"users">,
-): boolean {
-  const flag =
-    ownerId === friendship.userA
-      ? friendship.userAAllowsAgentAccess
-      : friendship.userBAllowsAgentAccess;
-  return flag !== false;
 }
 
 export const getBetween = query({
@@ -184,28 +162,21 @@ export const listConnections = query({
     type RawEntry = {
       friendshipId: Id<"friendships">;
       user: Doc<"users">;
-      iAllowFriend: boolean;
-      friendAllowsMe: boolean;
     };
-    const friendsRaw: RawEntry[] = [];
-    const incomingRaw: RawEntry[] = [];
-    const outgoingRaw: RawEntry[] = [];
+    const friends: RawEntry[] = [];
+    const incoming: RawEntry[] = [];
+    const outgoing: RawEntry[] = [];
 
     for (const f of all) {
       const other = await ctx.db.get(otherUserId(f, args.userId));
       if (other === null) continue;
-      const entry: RawEntry = {
-        friendshipId: f._id,
-        user: other,
-        iAllowFriend: ownerAllowsAgentAccess(f, args.userId),
-        friendAllowsMe: ownerAllowsAgentAccess(f, other._id),
-      };
+      const entry: RawEntry = { friendshipId: f._id, user: other };
       if (f.status === "accepted") {
-        friendsRaw.push(entry);
+        friends.push(entry);
       } else if (f.requesterId === args.userId) {
-        outgoingRaw.push(entry);
+        outgoing.push(entry);
       } else {
-        incomingRaw.push(entry);
+        incoming.push(entry);
       }
     }
 
@@ -230,8 +201,6 @@ export const listConnections = query({
           phoneNumber: e.user.phoneNumber,
           photoUrl,
         },
-        iAllowFriend: e.iAllowFriend,
-        friendAllowsMe: e.friendAllowsMe,
       };
     };
 
@@ -241,9 +210,9 @@ export const listConnections = query({
       .collect();
 
     return {
-      friends: await Promise.all(friendsRaw.map(toSummary)),
-      incoming: await Promise.all(incomingRaw.map(toSummary)),
-      outgoing: await Promise.all(outgoingRaw.map(toSummary)),
+      friends: await Promise.all(friends.map(toSummary)),
+      incoming: await Promise.all(incoming.map(toSummary)),
+      outgoing: await Promise.all(outgoing.map(toSummary)),
       outgoingPhoneInvites: phoneInvites.map((p) => ({
         inviteId: p._id,
         phoneNumber: p.phoneNumber,
@@ -532,38 +501,11 @@ export async function resolvePhoneInvitesForNewUser(
   return converted;
 }
 
-// Let `userId` toggle whether THEIR calendar is visible to `otherUserId`'s
-// agent. Writes one side of the pair — the other side's flag is set by the
-// other user on their own call.
-export const setAgentAccess = mutation({
-  args: {
-    userId: v.id("users"),
-    otherUserId: v.id("users"),
-    allow: v.boolean(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const friendship = await findFriendship(
-      ctx,
-      args.userId,
-      args.otherUserId,
-    );
-    if (friendship === null || friendship.status !== "accepted") {
-      throw new ConvexError("You are not friends with this user");
-    }
-    const patch =
-      args.userId === friendship.userA
-        ? { userAAllowsAgentAccess: args.allow }
-        : { userBAllowsAgentAccess: args.allow };
-    await ctx.db.patch(friendship._id, patch);
-    return null;
-  },
-});
-
-// Can `viewerId`'s agent read `ownerId`'s calendar? True iff they are
-// accepted friends and `ownerId` has not explicitly opted out. Viewer
-// reading their own calendar is always allowed.
-export const canViewFriendCalendar = query({
+// Are these two users accepted friends? Sharing follows directly from
+// friendship — if yes, their calendars are mutually visible to each other's
+// agent. Returns true for the self case so callers can pass viewer/owner
+// without a special case.
+export const areFriends = query({
   args: {
     viewerId: v.id("users"),
     ownerId: v.id("users"),
@@ -576,10 +518,7 @@ export const canViewFriendCalendar = query({
       args.viewerId,
       args.ownerId,
     );
-    if (friendship === null || friendship.status !== "accepted") {
-      return false;
-    }
-    return ownerAllowsAgentAccess(friendship, args.ownerId);
+    return friendship !== null && friendship.status === "accepted";
   },
 });
 

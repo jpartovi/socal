@@ -137,6 +137,7 @@ export const upsertFromOAuth = mutation({
           "This Google account is already connected to another socal user",
         );
       }
+      const normalizedEmail = args.email.trim().toLowerCase();
       const patch: {
         email: string;
         name?: string;
@@ -147,7 +148,7 @@ export const upsertFromOAuth = mutation({
         connectedAt: number;
         refreshToken?: string;
       } = {
-        email: args.email,
+        email: normalizedEmail,
         name: args.name,
         pictureUrl: args.pictureUrl,
         accessToken: args.accessToken,
@@ -164,10 +165,11 @@ export const upsertFromOAuth = mutation({
       return existing._id;
     }
 
+    const normalizedEmail = args.email.trim().toLowerCase();
     const newId = await ctx.db.insert("googleAccounts", {
       userId: args.userId,
       googleSub: args.googleSub,
-      email: args.email,
+      email: normalizedEmail,
       name: args.name,
       pictureUrl: args.pictureUrl,
       accessToken: args.accessToken,

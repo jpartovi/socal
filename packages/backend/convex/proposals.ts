@@ -8,6 +8,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { resolvePrimaryGoogleAccountForUser } from "./googleAccounts";
 
 // Agent-authored event proposals.
 //
@@ -41,6 +42,14 @@ const proposalDoc = v.object({
   proposedAt: v.number(),
   respondedAt: v.optional(v.number()),
   createdEventId: v.optional(v.id("events")),
+  participantFriendUserIds: v.optional(v.array(v.id("users"))),
+});
+
+const proposalParticipantSummary = v.object({
+  userId: v.id("users"),
+  firstName: v.string(),
+  lastName: v.string(),
+  photoUrl: v.union(v.string(), v.null()),
 });
 
 const proposalWithCalendar = v.object({
@@ -52,6 +61,7 @@ const proposalWithCalendar = v.object({
     backgroundColor: v.string(),
     foregroundColor: v.string(),
   }),
+  participants: v.array(proposalParticipantSummary),
 });
 
 // Shared ownership guard: the proposal's userId must match args.userId AND
@@ -89,6 +99,63 @@ async function assertUserOwnsCalendar(
   return calendar;
 }
 
+function orderPair(
+  a: Id<"users">,
+  b: Id<"users">,
+): { userA: Id<"users">; userB: Id<"users"> } {
+  return a < b ? { userA: a, userB: b } : { userA: b, userB: a };
+}
+
+async function assertAcceptedFriendship(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">,
+  friendUserId: Id<"users">,
+): Promise<void> {
+  if (userId === friendUserId) {
+    throw new ConvexError("Cannot add yourself as a participant");
+  }
+  const { userA, userB } = orderPair(userId, friendUserId);
+  const friendship = await ctx.db
+    .query("friendships")
+    .withIndex("by_pair", (q) => q.eq("userA", userA).eq("userB", userB))
+    .unique();
+  if (friendship === null || friendship.status !== "accepted") {
+    throw new ConvexError("Participant is not an accepted friend");
+  }
+}
+
+function dedupeFriendUserIds(ids: Id<"users">[]): Id<"users">[] {
+  return [...new Set(ids)];
+}
+
+/**
+ * Matches events.listForUserInRange attendee photos: uploaded photo wins when
+ * useDefaultAvatar is not true, then primary Google, then any connected Google.
+ */
+async function resolvePhotoUrlForUser(
+  ctx: QueryCtx,
+  user: Doc<"users">,
+): Promise<string | null> {
+  let photoUrl: string | null = null;
+  if (user.photoStorageId && !user.useDefaultAvatar) {
+    const url = await ctx.storage.getUrl(user.photoStorageId);
+    if (url) photoUrl = url;
+  }
+  const primary = await resolvePrimaryGoogleAccountForUser(ctx, user._id);
+  if (photoUrl === null) {
+    photoUrl = primary?.pictureUrl ?? null;
+  }
+  if (photoUrl === null) {
+    const googleAccount = await ctx.db
+      .query("googleAccounts")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .filter((q) => q.neq(q.field("pictureUrl"), undefined))
+      .first();
+    photoUrl = googleAccount?.pictureUrl ?? null;
+  }
+  return photoUrl;
+}
+
 // Agent-invoked: insert a pending proposal. `proposedAt` is set server-side
 // so the queryable ordering is deterministic regardless of client clocks.
 export const create = mutation({
@@ -101,6 +168,7 @@ export const create = mutation({
     start: v.number(),
     end: v.number(),
     allDay: v.boolean(),
+    participantFriendUserIds: v.optional(v.array(v.id("users"))),
   },
   returns: v.id("eventProposals"),
   handler: async (ctx, args) => {
@@ -115,6 +183,10 @@ export const create = mutation({
     if (calendar.accessRole !== "owner" && calendar.accessRole !== "writer") {
       throw new ConvexError("Calendar is read-only");
     }
+    const friendIds = dedupeFriendUserIds(args.participantFriendUserIds ?? []);
+    for (const fid of friendIds) {
+      await assertAcceptedFriendship(ctx, args.userId, fid);
+    }
     return await ctx.db.insert("eventProposals", {
       userId: args.userId,
       calendarId: args.calendarId,
@@ -126,6 +198,8 @@ export const create = mutation({
       allDay: args.allDay,
       status: "pending",
       proposedAt: Date.now(),
+      participantFriendUserIds:
+        friendIds.length > 0 ? friendIds : undefined,
     });
   },
 });
@@ -164,10 +238,33 @@ export const listForUserInRange = query({
         backgroundColor: string;
         foregroundColor: string;
       };
+      participants: Array<{
+        userId: Id<"users">;
+        firstName: string;
+        lastName: string;
+      }>;
     }> = [];
     for (const proposal of inRange) {
       const calendar = await ctx.db.get(proposal.calendarId);
       if (calendar === null) continue;
+      const participantIds = proposal.participantFriendUserIds ?? [];
+      const participants: Array<{
+        userId: Id<"users">;
+        firstName: string;
+        lastName: string;
+        photoUrl: string | null;
+      }> = [];
+      for (const uid of participantIds) {
+        const u = await ctx.db.get(uid);
+        if (u === null) continue;
+        const photoUrl = await resolvePhotoUrlForUser(ctx, u);
+        participants.push({
+          userId: u._id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          photoUrl,
+        });
+      }
       results.push({
         proposal,
         calendar: {
@@ -177,6 +274,7 @@ export const listForUserInRange = query({
           backgroundColor: calendar.colorOverride ?? calendar.backgroundColor,
           foregroundColor: calendar.foregroundColor,
         },
+        participants,
       });
     }
     results.sort((a, b) => a.proposal.start - b.proposal.start);
@@ -204,6 +302,15 @@ export const accept = action({
       throw new ConvexError(`Proposal is already ${proposal.status}`);
     }
 
+    const friendIds = proposal.participantFriendUserIds ?? [];
+    const attendees =
+      friendIds.length > 0
+        ? await ctx.runQuery(api.proposals._resolveParticipantEmailsForAccept, {
+            userId: args.userId,
+            friendUserIds: friendIds,
+          })
+        : undefined;
+
     const eventId = await ctx.runAction(api.events.createEvent, {
       userId: args.userId,
       calendarId: proposal.calendarId,
@@ -213,6 +320,7 @@ export const accept = action({
       start: proposal.start,
       end: proposal.end,
       allDay: proposal.allDay,
+      attendees,
     });
 
     await ctx.runMutation(api.proposals._markAccepted, {
@@ -239,6 +347,38 @@ export const _getForAccept = query({
     if (proposal === null) return null;
     if (proposal.userId !== args.userId) return null;
     return proposal;
+  },
+});
+
+// Validates friendships and resolves primary Google emails for calendar invites.
+// Called from proposals.accept before createEvent.
+export const _resolveParticipantEmailsForAccept = query({
+  args: {
+    userId: v.id("users"),
+    friendUserIds: v.array(v.id("users")),
+  },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    const unique = dedupeFriendUserIds(args.friendUserIds);
+    if (unique.length === 0) {
+      return [];
+    }
+    const emails: string[] = [];
+    for (const friendId of unique) {
+      await assertAcceptedFriendship(ctx, args.userId, friendId);
+      const primary = await resolvePrimaryGoogleAccountForUser(ctx, friendId);
+      if (primary === null) {
+        const u = await ctx.db.get(friendId);
+        const label = u
+          ? `${u.firstName} ${u.lastName}`.trim() || "Friend"
+          : "Friend";
+        throw new ConvexError(
+          `Cannot accept: ${label} has no connected Google email for invites.`,
+        );
+      }
+      emails.push(primary.email);
+    }
+    return emails;
   },
 });
 

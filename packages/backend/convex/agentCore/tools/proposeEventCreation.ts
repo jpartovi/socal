@@ -24,6 +24,7 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
         calendarId: args.calendarId,
         googleAccountEmail: args.googleAccountEmail,
         spacingValidationOverride: args.spacingValidationOverride,
+        participantFriendUserIds: args.participantFriendUserIds,
       });
       const start = Date.parse(args.startIso);
       const end = Date.parse(args.endIso);
@@ -39,6 +40,10 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           "No proposal was created."
         );
       }
+      const rawFriendIds = args.participantFriendUserIds ?? [];
+      const participantFriendUserIds = [
+        ...new Set(rawFriendIds.map((id) => id as Id<"users">)),
+      ];
       const allDay = args.allDay ?? false;
       if (!allDay && !args.spacingValidationOverride) {
         const busyRows = await ctx.runQuery(api.events.listForUserInRange, {
@@ -58,6 +63,48 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
             reason: spacingErr,
           });
           return `FAILED — propose_event_creation: ${spacingErr}`;
+        }
+        const rangeStart = start - PROPOSE_MIN_GAP_MS;
+        const rangeEnd = end + PROPOSE_MIN_GAP_MS;
+        for (const friendId of participantFriendUserIds) {
+          const friendUser = await ctx.runQuery(api.users.getById, {
+            userId: friendId,
+          });
+          const friendLabel =
+            friendUser !== null
+              ? `${friendUser.firstName} ${friendUser.lastName}`.trim() ||
+                "Friend"
+              : "Friend";
+          const allowed = await ctx.runQuery(api.friendships.areFriends, {
+            viewerId: userId,
+            ownerId: friendId,
+          });
+          if (!allowed) {
+            return (
+              `FAILED — propose_event_creation: ${friendLabel} is not an accepted friend ` +
+              `(participantFriendUserIds). No proposal was created. Ask the user to connect as friends first.`
+            );
+          }
+          const friendBusy = await ctx.runQuery(api.events.listForUserInRange, {
+            userId: friendId,
+            start: rangeStart,
+            end: rangeEnd,
+          });
+          const friendSpacingErr = timedProposalSpacingError(
+            start,
+            end,
+            friendBusy,
+            userTimeZone,
+            { subjectDescription: `${friendLabel}'s calendar` },
+          );
+          if (friendSpacingErr !== null) {
+            console.log("[agent-tool] propose_event_creation rejected (friend)", {
+              summary: args.summary,
+              friendId,
+              reason: friendSpacingErr,
+            });
+            return `FAILED — propose_event_creation: ${friendSpacingErr}`;
+          }
         }
       }
       let calendarId: Id<"calendars"> | null = null;
@@ -87,6 +134,10 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
         start,
         end,
         allDay,
+        participantFriendUserIds:
+          participantFriendUserIds.length > 0
+            ? participantFriendUserIds
+            : undefined,
       });
       runState.proposalIds.push(proposalId);
       console.log("[agent-tool] propose_event_creation result", {
@@ -102,7 +153,7 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
         "The user will see a ghost card in their calendar and can Accept or Reject it. " +
         "Use this whenever the user asks to add, book, schedule, or block time for something. " +
         "Gather enough context first (e.g. get_user_schedule to check for conflicts) — do not call speculatively. " +
-        "For timed events (allDay false or omitted), the server rejects proposals that overlap other timed events or sit within 15 minutes of another timed event's start/end unless spacingValidationOverride is true — all-day events are ignored for this check. Use the override only when the user explicitly asked for back-to-back or overlapping placement. " +
+        "For timed events (allDay false or omitted), the server rejects proposals that overlap other timed events or sit within 15 minutes of another timed event's start/end on the user's calendar — and the same rules apply to each accepted friend listed in participantFriendUserIds (their enabled calendars), unless spacingValidationOverride is true — all-day events are ignored for this check. Use the override only when the user explicitly asked for back-to-back or overlapping placement. " +
         "If the call fails validation, the tool returns a message starting with FAILED — read that message (it explains overlap vs too-tight gap and what to change); do not blindly retry the same times.",
       schema: z.object({
         summary: z
@@ -148,8 +199,15 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           .boolean()
           .optional()
           .describe(
-            "If true, skip server checks that block overlap and <15 min gaps vs existing events. " +
+            "If true, skip server checks that block overlap and <15 min gaps vs the user's and participants' existing timed events. " +
               "Only set when the user explicitly asked for back-to-back or overlapping events. Default false.",
+          ),
+        participantFriendUserIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Convex user ids of accepted friends to invite as Google Calendar attendees when the user accepts the proposal. " +
+              "Use ids from find_friend (e.g. when scheduling with a named friend). Omit for solo events.",
           ),
       }),
     },

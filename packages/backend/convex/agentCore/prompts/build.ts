@@ -51,8 +51,17 @@ const schedulingGuidelinesSection = () =>
   `- Never schedule a new timed event so that it overlaps another timed event returned by get_user_schedule, even partially, unless you have a specific reason to believe the overlap is fine (e.g. the user explicitly said "replace my 3pm" or the existing event is clearly a tentative/low-signal block and the user's request is more important). "I couldn't find a free slot in the preferred window" is NOT such a reason — shift the time instead.\n` +
   `- Treat all calendar entries as busy by default, regardless of title: classes, meetings, appointments, focus blocks, travel, and anything else.\n` +
   `- By default, leave ~10-15 min of gap between the new event and any adjacent existing event, on whichever side is adjacent. This applies whenever the new event touches the end of a prior event or the start of a next event. Exceptions (when no padding is appropriate): the user explicitly asked for back-to-back, the two events are clearly in the same physical/mental context (two meetings in the same room, two focus blocks), or the adjacent event is a low-signal all-day block. E.g. class ends 12:30 → lunch starts 12:40 or 12:45, not 12:30.\n` +
-  `- Prefer shifting the time over dropping a soft constraint, and prefer dropping a soft constraint over overlapping a hard event. E.g. lunch at 1:15pm beats lunch on top of a noon class.\n` +
-  `- Do not set a description or location on the proposal unless the user asked for one or specified it. Leave those fields unset by default — don't invent a venue, don't restate the title as a description, don't summarize the user's request in the description. If the user says "lunch at Sweetgreen", location is "Sweetgreen"; if they just say "lunch", both fields stay empty.`;
+  `- Prefer shifting the time over dropping a soft constraint, and prefer dropping a soft constraint over overlapping a hard event. E.g. lunch at 1:15pm beats lunch on top of a noon class.`;
+
+const eventProposalGuidelinesSection = () =>
+  `Event proposal (propose_event_creation) guidelines.\n` +
+  `Summary / title:\n` +
+  `- The summary is the calendar title for everyone who gets the event — including each friend in participantFriendUserIds (they receive a Google Calendar invite). Phrase it as something that reads naturally on an invitee's own calendar.\n` +
+  `- When participantFriendUserIds is non-empty, use a short neutral activity title only: e.g. "Lunch", "Coffee", "Dinner", "Walk", "Drinks", "Call". Do not include the friend's name in the summary (avoid "Lunch with Henry") — they are already an attendee, and seeing their own name in the title is awkward.\n` +
+  `- For solo events (omit participantFriendUserIds), richer titles on the user's calendar are fine when helpful, e.g. "Call — Mom", "Dentist", or a project name.\n` +
+  `Description and location:\n` +
+  `- Do not set description or location unless the user asked for one or specified them. Leave those fields unset by default — don't invent a venue, don't restate the title as a description, don't summarize the user's request in the description.\n` +
+  `- If the user says "lunch at Sweetgreen", location is "Sweetgreen"; if they only say "lunch", both fields stay empty.`;
 
 const timeContextSection = (c: PromptContext) => {
   const now = new Date(c.nowIso);
@@ -72,7 +81,7 @@ const timeContextSection = (c: PromptContext) => {
 };
 
 const relativeDateContextSection = (c: PromptContext) =>
-  `RELATIVE DATES (user phrasing → concrete ranges in their timezone):\n` +
+  `Here are the values of some relative dates given the current time, date, and timezone:\n` +
   buildRelativeDatesCheatSheet({
     nowIso: c.nowIso,
     userTimeZone: c.userTimeZone,
@@ -83,7 +92,7 @@ const friendSchedulingSection = () =>
   `1. Call find_friend with the name. If there are no candidates, finish with status error ("not friends with <name> on socal"). If one clear candidate, use it. If several, pick the closest full-name match and proceed — do not ask.\n` +
   `2. Call get_user_schedule AND get_friend_schedule for the candidate window in parallel. Find the earliest slot that satisfies the timing constraints from the general scheduling process, preserves ~10-15 min padding vs adjacent events on BOTH calendars, and does not overlap anything on either calendar.\n` +
   `3. Treat the friend's events with the same busy-by-default rule as the user's — but some events ARE reasonably skippable: low-stakes solo blocks ("read demis", "ML study", "deep work", "focus time", "reading", generic untitled blocks), tentative/held time. NOT skippable: anything with another person's name, classes, meetings, appointments, travel, exercise the user clearly cares about, anything labeled with a specific deliverable. If the only way to fit the event is to overlap a friend's skippable solo block, that's acceptable — but prefer shifting the time first. Never overlap a hard block on either side.\n` +
-  `4. Emit ONE propose_event_creation proposal on the user's calendar. Do not also propose on the friend's calendar — the user is only scheduling their own side for now. Put the friend's name in the summary ("Lunch with Jude"). Pass that friend's userId in participantFriendUserIds so they get a Google Calendar invite on accept. Do not set description or location unless the user specified them.`;
+  `4. Emit ONE propose_event_creation proposal on the user's calendar. Do not also propose on the friend's calendar — the user is only scheduling their own side for now. Follow the event proposal guidelines: neutral activity summary (e.g. "Lunch"), and pass that friend's userId in participantFriendUserIds so they get a Google Calendar invite on accept.`;
 
 export function buildSystemPrompt(ctx: PromptContext): string {
   return [
@@ -91,6 +100,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     toolContextSection(),
     schedulingProcessSection(),
     schedulingGuidelinesSection(),
+    eventProposalGuidelinesSection(),
     friendSchedulingSection(),
     timeContextSection(ctx),
     relativeDateContextSection(ctx),

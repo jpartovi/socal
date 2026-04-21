@@ -159,17 +159,18 @@ export const listConnections = query({
       .collect();
     const all = [...asA, ...asB];
 
-    const friends: { friendshipId: Id<"friendships">; user: Doc<"users"> }[] =
-      [];
-    const incoming: { friendshipId: Id<"friendships">; user: Doc<"users"> }[] =
-      [];
-    const outgoing: { friendshipId: Id<"friendships">; user: Doc<"users"> }[] =
-      [];
+    type RawEntry = {
+      friendshipId: Id<"friendships">;
+      user: Doc<"users">;
+    };
+    const friends: RawEntry[] = [];
+    const incoming: RawEntry[] = [];
+    const outgoing: RawEntry[] = [];
 
     for (const f of all) {
       const other = await ctx.db.get(otherUserId(f, args.userId));
       if (other === null) continue;
-      const entry = { friendshipId: f._id, user: other };
+      const entry: RawEntry = { friendshipId: f._id, user: other };
       if (f.status === "accepted") {
         friends.push(entry);
       } else if (f.requesterId === args.userId) {
@@ -179,10 +180,7 @@ export const listConnections = query({
       }
     }
 
-    const toSummary = async (e: {
-      friendshipId: Id<"friendships">;
-      user: Doc<"users">;
-    }) => {
+    const toSummary = async (e: RawEntry) => {
       let photoUrl = e.user.photoStorageId
         ? await ctx.storage.getUrl(e.user.photoStorageId)
         : null;
@@ -502,6 +500,27 @@ export async function resolvePhoneInvitesForNewUser(
   }
   return converted;
 }
+
+// Are these two users accepted friends? Sharing follows directly from
+// friendship — if yes, their calendars are mutually visible to each other's
+// agent. Returns true for the self case so callers can pass viewer/owner
+// without a special case.
+export const areFriends = query({
+  args: {
+    viewerId: v.id("users"),
+    ownerId: v.id("users"),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    if (args.viewerId === args.ownerId) return true;
+    const friendship = await findFriendship(
+      ctx,
+      args.viewerId,
+      args.ownerId,
+    );
+    return friendship !== null && friendship.status === "accepted";
+  },
+});
 
 // Exposed for manual/admin use — regular resolution happens inside
 // users.create via the helper above.

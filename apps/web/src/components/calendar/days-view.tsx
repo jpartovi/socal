@@ -1393,10 +1393,10 @@ function DayColumn({
         // We keep the button mounted so pointer capture stays alive.
         const hideForDrag = isDraggingMe && drag.active;
         const topPx = ((p.startMs - dayStartMs) / 86400_000) * totalHeightPx;
-        const heightPx = Math.max(
-          ((p.endMs - p.startMs) / 86400_000) * totalHeightPx,
-          14,
-        );
+        // Shave 2px off the bottom so adjacent events show a gcal-style
+        // hairline gap. Floor at 12px so very short events are still legible.
+        const rawHeightPx = ((p.endMs - p.startMs) / 86400_000) * totalHeightPx;
+        const heightPx = Math.max(rawHeightPx - 2, 12);
         const showStackedTime = heightPx >= 32;
         const showInlineTime = !showStackedTime && heightPx >= 20;
         const task = isTask(p.row);

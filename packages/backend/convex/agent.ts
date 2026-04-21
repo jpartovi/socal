@@ -9,6 +9,7 @@ import { invokeCalendarAgent } from "./agentCore/invoke.js";
 import { createAgentLlm } from "./agentCore/llm.js";
 import { parseFinishAgentFromMessages } from "./agentCore/parseResult.js";
 import { buildSystemPrompt } from "./agentCore/prompts/build.js";
+import { createRunState } from "./agentCore/tools/deps.js";
 import { makeCalendarTools } from "./agentCore/tools/index.js";
 
 const agentRunResult = v.union(
@@ -30,10 +31,12 @@ export const run = action({
     const user = await ctx.runQuery(api.users.getById, { userId });
 
     const llm = createAgentLlm();
+    const runState = createRunState();
     const tools = makeCalendarTools({
       ctx,
       userId,
       userTimeZone: user?.timeZone,
+      runState,
     });
 
     const systemPrompt = buildSystemPrompt({
@@ -42,14 +45,35 @@ export const run = action({
       userTimeZone: user?.timeZone,
     });
 
-    const result = await invokeCalendarAgent({
-      llm,
-      tools,
-      systemPrompt,
-      userMessage: message,
-      recursionLimit: 24,
-    });
-
-    return parseFinishAgentFromMessages(result.messages);
+    try {
+      const result = await invokeCalendarAgent({
+        llm,
+        tools,
+        systemPrompt,
+        userMessage: message,
+        recursionLimit: 40,
+      });
+      return parseFinishAgentFromMessages(result.messages);
+    } catch (err) {
+      // LangGraph throws GraphRecursionError when the step limit is hit
+      // before the agent calls finish_agent. If the run already produced
+      // a proposal the ghost card is live in the DB, so report completed.
+      const name = err instanceof Error ? err.name : "";
+      const isRecursion = name === "GraphRecursionError";
+      if (isRecursion && runState.proposalIds.length > 0) {
+        console.warn(
+          "[agent] recursion limit hit, but a proposal was created — returning completed",
+          { proposalIds: runState.proposalIds },
+        );
+        return { status: "completed" as const };
+      }
+      if (isRecursion) {
+        return {
+          status: "error" as const,
+          reason: "Agent ran too long without finishing. Try rephrasing.",
+        };
+      }
+      throw err;
+    }
   },
 });

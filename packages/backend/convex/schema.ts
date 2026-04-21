@@ -14,7 +14,8 @@ export default defineSchema({
   // Bidirectional friendships. Each pair is stored exactly once with ids in
   // lexicographic order (userA < userB) so that lookups never need to query
   // both directions. `requesterId` tracks who sent the request; the other
-  // user must accept before `status` flips to "accepted".
+  // user must accept before `status` flips to "accepted". Calendar sharing
+  // is implicit in the friendship — no per-direction toggle.
   friendships: defineTable({
     userA: v.id("users"),
     userB: v.id("users"),

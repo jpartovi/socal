@@ -12,7 +12,7 @@ import {
 import type { ToolDeps } from "./deps";
 
 export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterface {
-  const { ctx, userId, userTimeZone } = deps;
+  const { ctx, userId, userTimeZone, runState } = deps;
   return tool(
     async (args) => {
       console.log("[agent-tool] propose_event_creation call", {
@@ -78,6 +78,7 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
         end,
         allDay,
       });
+      runState.proposalIds.push(proposalId);
       console.log("[agent-tool] propose_event_creation result", {
         proposalId,
         summary: args.summary,

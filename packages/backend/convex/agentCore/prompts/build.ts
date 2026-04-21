@@ -2,6 +2,7 @@
 // "use node" — unit-testable and reusable.
 
 import { isoInZone } from "../../timezone";
+import { buildRelativeDatesCheatSheet } from "./relativeDateCheatSheet.js";
 
 export type PromptContext = {
   nowIso: string;
@@ -70,6 +71,13 @@ const timeContextSection = (c: PromptContext) => {
   );
 };
 
+const relativeDateContextSection = (c: PromptContext) =>
+  `RELATIVE DATES (user phrasing → concrete ranges in their timezone):\n` +
+  buildRelativeDatesCheatSheet({
+    nowIso: c.nowIso,
+    userTimeZone: c.userTimeZone,
+  });
+
 const friendSchedulingSection = () =>
   `Scheduling with a friend. When the user names a specific person ("lunch with Jude", "coffee with Alex tomorrow"):\n` +
   `1. Call find_friend with the name. If there are no candidates, finish with status error ("not friends with <name> on socal"). If one clear candidate, use it. If several, pick the closest full-name match and proceed — do not ask.\n` +
@@ -85,6 +93,7 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     schedulingGuidelinesSection(),
     friendSchedulingSection(),
     timeContextSection(ctx),
+    relativeDateContextSection(ctx),
   ]
     .filter(Boolean)
     .join("\n\n");

@@ -158,7 +158,9 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
       schema: z.object({
         summary: z
           .string()
-          .describe("Short title for the event, e.g. 'Walk' or 'Lunch with Alex'."),
+          .describe(
+            "Calendar title visible to all attendees. Neutral activity when participantFriendUserIds is set (e.g. 'Lunch', 'Coffee'); solo events may be more specific (e.g. 'Dentist', 'Walk').",
+          ),
         startIso: z
           .string()
           .describe(

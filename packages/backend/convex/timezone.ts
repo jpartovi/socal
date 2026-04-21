@@ -59,6 +59,75 @@ export function localDateOnlyInZone(ms: number, timeZone?: string): string {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * UTC milliseconds for a civil date/time interpreted in `timeZone` (IANA).
+ * Uses iterative refinement so DST transitions resolve correctly. Without a
+ * zone, treats the components as UTC (same as `Date.UTC`).
+ */
+export function zonedWallClockToUtcMillis(
+  timeZone: string | undefined,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+): number {
+  if (!timeZone) {
+    return Date.UTC(year, month - 1, day, hour, minute, second);
+  }
+  const want = { year, month, day, hour, minute, second };
+  let guess = Date.UTC(year, month - 1, day, hour, minute, second);
+  for (let i = 0; i < 24; i++) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(guess));
+    const p: Record<string, string> = {};
+    for (const part of parts) p[part.type] = part.value;
+    const gotY = Number(p.year);
+    const gotM = Number(p.month);
+    const gotD = Number(p.day);
+    const gotH = Number(p.hour);
+    const gotMin = Number(p.minute);
+    const gotS = Number(p.second);
+    if (
+      gotY === want.year &&
+      gotM === want.month &&
+      gotD === want.day &&
+      gotH === want.hour &&
+      gotMin === want.minute &&
+      gotS === want.second
+    ) {
+      return guess;
+    }
+    const gotAsUtc = Date.UTC(
+      gotY,
+      gotM - 1,
+      gotD,
+      gotH,
+      gotMin,
+      gotS,
+    );
+    const wantAsUtc = Date.UTC(
+      want.year,
+      want.month - 1,
+      want.day,
+      want.hour,
+      want.minute,
+      want.second,
+    );
+    guess += wantAsUtc - gotAsUtc;
+  }
+  throw new Error("zonedWallClockToUtcMillis: failed to converge");
+}
+
 function formatOffset(offsetMinutes: number): string {
   if (offsetMinutes === 0) return "Z";
   const sign = offsetMinutes > 0 ? "+" : "-";

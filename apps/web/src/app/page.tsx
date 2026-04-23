@@ -6,7 +6,7 @@ import { Button } from "@socal/ui/components/button";
 import { useAction, useQuery } from "convex/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AgendaView } from "@/components/calendar/agenda-view";
 import { AgentInput } from "@/components/calendar/agent-input";
@@ -15,12 +15,14 @@ import {
   DaysView,
   type DraftCalendarEvent,
 } from "@/components/calendar/days-view";
+import { HighlightProvider } from "@/components/calendar/highlight-context";
 import {
   type CalendarView,
   navigate,
   numDaysFor,
   rangeFor,
   startOfDay,
+  startOfWeek,
   titleFor,
 } from "@/components/calendar/lib";
 import { MonthView } from "@/components/calendar/month-view";
@@ -28,6 +30,7 @@ import { TimezoneBanner } from "@/components/calendar/timezone-banner";
 import { RequireAuth } from "@/components/require-auth";
 import { UserMenu } from "@/components/user-menu";
 import { Wordmark } from "@/components/wordmark";
+import { AgentQueueProvider, useAgentQueue } from "@/lib/agent-queue";
 import { useAuth } from "@/lib/auth";
 import { useUndo } from "@/lib/undo";
 
@@ -77,43 +80,45 @@ export default function Home() {
 
   return (
     <RequireAuth>
-      <main className="flex h-screen min-h-0 flex-col overflow-hidden">
-        <header className="flex shrink-0 items-center justify-between pl-4 pr-6 py-1">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              aria-label={sidebarOpen ? "Hide calendars" : "Show calendars"}
-              aria-pressed={sidebarOpen}
-              className="hidden h-7 w-7 items-center justify-center rounded-xl hover:bg-muted lg:inline-flex"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/brand-mark.png"
-                alt=""
-                className={`h-5 w-5 object-contain transition-opacity ${
-                  sidebarOpen ? "opacity-100" : "opacity-50"
-                }`}
-              />
-            </button>
-            <Link href="/" aria-label="Home">
-              <Wordmark size="sm" showMark={false} />
-            </Link>
-          </div>
-          <UserMenu />
-        </header>
-        <TimezoneBanner />
-        <div className="flex min-h-0 flex-1 items-stretch">
-          {sidebarOpen && (
-            <div className="hidden lg:flex">
-              <CalendarsSidebar />
+      <AgentQueueProvider>
+        <main className="flex h-screen min-h-0 flex-col overflow-hidden">
+          <header className="flex shrink-0 items-center justify-between pl-4 pr-6 py-1">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                aria-label={sidebarOpen ? "Hide calendars" : "Show calendars"}
+                aria-pressed={sidebarOpen}
+                className="hidden h-7 w-7 items-center justify-center rounded-xl hover:bg-muted lg:inline-flex"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/brand-mark.png"
+                  alt=""
+                  className={`h-5 w-5 object-contain transition-opacity ${
+                    sidebarOpen ? "opacity-100" : "opacity-50"
+                  }`}
+                />
+              </button>
+              <Link href="/" aria-label="Home">
+                <Wordmark size="sm" showMark={false} />
+              </Link>
             </div>
-          )}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <CalendarHome />
+            <UserMenu />
+          </header>
+          <TimezoneBanner />
+          <div className="flex min-h-0 flex-1 items-stretch">
+            {sidebarOpen && (
+              <div className="hidden lg:flex">
+                <CalendarsSidebar />
+              </div>
+            )}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <CalendarHome />
+            </div>
           </div>
-        </div>
-      </main>
+        </main>
+      </AgentQueueProvider>
     </RequireAuth>
   );
 }
@@ -209,7 +214,65 @@ function CalendarHome() {
     userId ? { userId, start: start.getTime(), end: end.getTime() } : "skip",
   );
 
+  // IDs of proposals the agent just created — paints a sparkle glow for a
+  // few seconds so the user's eye lands on the suggestion instead of having
+  // to hunt for it in their week.
+  const [highlightedProposalIds, setHighlightedProposalIds] = useState<
+    Set<Id<"eventProposals">>
+  >(new Set());
+  // Holds ids we want to jump the calendar to once the live query catches up.
+  // Cleared as soon as we find the proposal and move the anchor.
+  const [pendingJumpIds, setPendingJumpIds] = useState<
+    Id<"eventProposals">[]
+  >([]);
+  const onProposalsCreated = useCallback((ids: Id<"eventProposals">[]) => {
+    if (ids.length === 0) return;
+    setHighlightedProposalIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+    setPendingJumpIds(ids);
+    window.setTimeout(() => {
+      setHighlightedProposalIds((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+    }, 4000);
+  }, []);
+  useEffect(() => {
+    if (pendingJumpIds.length === 0 || proposals === undefined) return;
+    const ids = new Set(pendingJumpIds);
+    const matching = proposals.filter((p) => ids.has(p.proposal._id));
+    if (matching.length === 0) return;
+    const earliest = matching.reduce(
+      (acc, p) => (p.proposal.start < acc ? p.proposal.start : acc),
+      Number.POSITIVE_INFINITY,
+    );
+    setAnchor(startOfDay(new Date(earliest)));
+    setPendingJumpIds([]);
+  }, [pendingJumpIds, proposals]);
+
+  // Bridge: when a queued agent task finishes with new proposal ids, run the
+  // same highlight + jump flow that used to fire inside AgentInput. Consumed
+  // task ids are tracked in a ref so we don't re-fire if the task lingers a
+  // few seconds before the queue drops it.
+  const { tasks: agentTasks } = useAgentQueue();
+  const consumedTaskIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const t of agentTasks) {
+      if (t.status !== "done") continue;
+      if (consumedTaskIds.current.has(t.id)) continue;
+      consumedTaskIds.current.add(t.id);
+      if (t.proposalIds && t.proposalIds.length > 0) {
+        onProposalsCreated(t.proposalIds);
+      }
+    }
+  }, [agentTasks, onProposalsCreated]);
+
   const syncUser = useAction(api.events.syncUser);
+  const forceResyncUser = useAction(api.events.forceResyncUser);
   const patchEventTimes = useAction(api.events.patchEventTimes);
   const createEvent = useAction(api.events.createEvent);
   const defaultCalendar = useQuery(
@@ -321,14 +384,42 @@ function CalendarHome() {
     [userId, draftEvent, createEvent],
   );
 
-  // Fire a sync on mount per signed-in user. Incremental sync is cheap; the
-  // live query will repaint once rows land.
+  // Single in-flight sync at a time. Without this guard, mount + focus +
+  // visibilitychange + a manual click can all race against each other and
+  // against the 5-min server cron on the same calendar document, producing
+  // OCC conflicts in `events._applyChanges`. The ref is deliberately global
+  // to both effects below and the sync button.
+  const syncInFlightRef = useRef(false);
+  const runSync = useCallback(() => {
+    if (!userId || syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
+    syncUser({ userId })
+      .catch((err) => {
+        console.error("syncUser failed", err);
+      })
+      .finally(() => {
+        syncInFlightRef.current = false;
+      });
+  }, [userId, syncUser]);
+
+  // Fire once on mount, then on tab focus/visibility changes. Background
+  // freshness is handled by the 5-min server cron — no client-side interval
+  // needed (those just pile on OCC conflicts without adding coverage).
+  useEffect(() => {
+    runSync();
+  }, [runSync]);
   useEffect(() => {
     if (!userId) return;
-    syncUser({ userId }).catch((err) => {
-      console.error("syncUser failed", err);
-    });
-  }, [userId, syncUser]);
+    const onFocus = () => {
+      if (document.visibilityState === "visible") runSync();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [userId, runSync]);
 
   const goToday = useCallback(() => setAnchor(startOfDay(new Date())), []);
   const goPrev = useCallback(
@@ -398,7 +489,7 @@ function CalendarHome() {
         }
         case "r":
         case "R":
-          if (userId) syncUser({ userId }).catch(() => {});
+          runSync();
           break;
         default:
           return;
@@ -407,7 +498,7 @@ function CalendarHome() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goToday, goPrev, goNext, syncUser, userId]);
+  }, [goToday, goPrev, goNext, runSync]);
 
   if (!userId || !calendarStateReady || anchor === null) return null;
 
@@ -420,46 +511,61 @@ function CalendarHome() {
         onToday={goToday}
         onPrev={goPrev}
         onNext={goNext}
+        onSync={() => {
+          if (!userId || syncInFlightRef.current) return;
+          syncInFlightRef.current = true;
+          forceResyncUser({ userId })
+            .catch((err) => {
+              console.error("forceResyncUser failed", err);
+            })
+            .finally(() => {
+              syncInFlightRef.current = false;
+            });
+        }}
       />
-      {events === undefined ? (
-        <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
-      ) : view === "agenda" ? (
-        <AgendaView
-          events={events}
-          proposals={proposals ?? []}
-          anchor={effectiveAnchor}
-        />
-      ) : view === "month" ? (
-        <MonthView
-          events={events}
-          proposals={proposals ?? []}
-          anchor={effectiveAnchor}
-        />
-      ) : (
-        <DaysView
-          events={events}
-          proposals={proposals ?? []}
-          anchor={effectiveAnchor}
-          numDays={numDaysFor(view)}
-          onMoveEvent={onMoveEvent}
-          onCreateEvent={defaultCalendarId ? onCreateEvent : null}
-          createEventAppearance={
-            defaultCalendar
-              ? {
-                  backgroundColor:
-                    defaultCalendar.colorOverride ??
-                    defaultCalendar.backgroundColor,
-                  foregroundColor: defaultCalendar.foregroundColor,
-                }
-              : null
-          }
-          draftEvent={draftEvent}
-          onDraftDismiss={() => setDraftEvent(null)}
-          onDraftCommit={commitDraftEvent}
-          createdEventId={createdEventId}
-          onCreateDismiss={() => setCreatedEventId(null)}
-        />
-      )}
+      <HighlightProvider ids={highlightedProposalIds}>
+        {events === undefined ? (
+          <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
+        ) : view === "agenda" ? (
+          <AgendaView
+            events={events}
+            proposals={proposals ?? []}
+            anchor={effectiveAnchor}
+          />
+        ) : view === "month" ? (
+          <MonthView
+            events={events}
+            proposals={proposals ?? []}
+            anchor={effectiveAnchor}
+          />
+        ) : (
+          <DaysView
+            events={events}
+            proposals={proposals ?? []}
+            anchor={
+              view === "week" ? startOfWeek(effectiveAnchor) : effectiveAnchor
+            }
+            numDays={numDaysFor(view)}
+            onMoveEvent={onMoveEvent}
+            onCreateEvent={defaultCalendarId ? onCreateEvent : null}
+            createEventAppearance={
+              defaultCalendar
+                ? {
+                    backgroundColor:
+                      defaultCalendar.colorOverride ??
+                      defaultCalendar.backgroundColor,
+                    foregroundColor: defaultCalendar.foregroundColor,
+                  }
+                : null
+            }
+            draftEvent={draftEvent}
+            onDraftDismiss={() => setDraftEvent(null)}
+            onDraftCommit={commitDraftEvent}
+            createdEventId={createdEventId}
+            onCreateDismiss={() => setCreatedEventId(null)}
+          />
+        )}
+      </HighlightProvider>
       <div className="mx-auto w-full max-w-2xl pt-1">
         <AgentInput />
       </div>
@@ -474,6 +580,7 @@ function Toolbar({
   onToday,
   onPrev,
   onNext,
+  onSync,
 }: {
   view: CalendarView;
   setView: (v: CalendarView) => void;
@@ -481,48 +588,68 @@ function Toolbar({
   onToday: () => void;
   onPrev: () => void;
   onNext: () => void;
+  onSync: () => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-9 rounded-xl"
-          onClick={onToday}
-        >
-          Today
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 rounded-xl"
-          onClick={onPrev}
-          aria-label="Previous"
-        >
-          ‹
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 rounded-xl"
-          onClick={onNext}
-          aria-label="Next"
-        >
-          ›
-        </Button>
-        <span className="ml-2 text-base font-medium">{title}</span>
+    <div className="flex flex-wrap items-end justify-between gap-4 pb-1 pt-2">
+      <div className="flex items-end gap-4">
+        <TitleDisplay title={title} />
+        <div className="flex items-center gap-1 pb-1">
+          <button
+            type="button"
+            onClick={onToday}
+            className="rounded-full bg-foreground/5 px-3 py-1 text-xs text-foreground/80 transition-transform duration-150 ease-out hover:scale-[1.04] hover:bg-foreground/10 active:scale-[0.96]"
+          >
+            Today
+          </button>
+          <button
+            type="button"
+            onClick={onPrev}
+            aria-label="Previous"
+            className="flex h-7 w-7 items-center justify-center rounded-full text-foreground/60 transition-transform duration-150 ease-out hover:scale-[1.08] hover:bg-foreground/5 hover:text-foreground active:scale-[0.94]"
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={onNext}
+            aria-label="Next"
+            className="flex h-7 w-7 items-center justify-center rounded-full text-foreground/60 transition-transform duration-150 ease-out hover:scale-[1.08] hover:bg-foreground/5 hover:text-foreground active:scale-[0.94]"
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            onClick={onSync}
+            title="Sync from Google Calendar"
+            className="ml-1 flex h-7 w-7 items-center justify-center rounded-full text-foreground/60 transition-transform duration-150 ease-out hover:scale-[1.08] hover:bg-foreground/5 hover:text-foreground active:scale-[0.94]"
+            aria-label="Sync"
+          >
+            <svg
+              viewBox="0 0 16 16"
+              className="h-3.5 w-3.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89" />
+              <path d="M13.5 2.5v3h-3" />
+            </svg>
+          </button>
+        </div>
       </div>
-      <div className="flex items-center gap-1 rounded-xl border p-1">
+      <div className="flex items-center gap-0.5 pb-1">
         {VIEW_BUTTONS.map((b) => (
           <button
             key={b.view}
             type="button"
             onClick={() => setView(b.view)}
-            className={`rounded-lg px-2.5 py-1 text-xs ${
+            className={`rounded-full px-3 py-1 text-xs transition-transform duration-150 ease-out hover:scale-[1.04] active:scale-[0.96] ${
               b.view === view
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted"
+                ? "bg-foreground text-background"
+                : "text-foreground/55 hover:text-foreground"
             }`}
             title={b.hint ? `${b.label} (${b.hint})` : b.label}
           >
@@ -531,5 +658,15 @@ function Toolbar({
         ))}
       </div>
     </div>
+  );
+}
+
+// Sans-serif, same size/weight as the weekday number headers ("23", "24",
+// "25") — one unified voice for the toolbar row.
+function TitleDisplay({ title }: { title: string }) {
+  return (
+    <h1 className="text-2xl font-medium leading-none tracking-tight text-foreground/90">
+      {title}
+    </h1>
   );
 }

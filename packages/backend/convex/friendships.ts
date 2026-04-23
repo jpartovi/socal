@@ -42,6 +42,7 @@ const friendUserSummary = v.object({
   lastName: v.string(),
   phoneNumber: v.string(),
   photoUrl: v.union(v.string(), v.null()),
+  primaryEmail: v.union(v.string(), v.null()),
 });
 
 const connectionEntry = v.object({
@@ -192,6 +193,13 @@ export const listConnections = query({
           .first();
         photoUrl = googleAccount?.pictureUrl ?? null;
       }
+      // First connected Google account email is a reasonable "primary" —
+      // most users have one and it matches what we join against on event
+      // attendee emails. Null when the friend hasn't connected Google yet.
+      const firstAccount = await ctx.db
+        .query("googleAccounts")
+        .withIndex("by_user", (q) => q.eq("userId", e.user._id))
+        .first();
       return {
         friendshipId: e.friendshipId,
         user: {
@@ -200,6 +208,7 @@ export const listConnections = query({
           lastName: e.user.lastName,
           phoneNumber: e.user.phoneNumber,
           photoUrl,
+          primaryEmail: firstAccount?.email ?? null,
         },
       };
     };

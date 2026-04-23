@@ -6,8 +6,45 @@ import { isoInZone } from "../../timezone";
 export const PROPOSE_MIN_GAP_MS = 15 * 60 * 1000;
 
 export type BusyEventRow = {
-  event: { start: number; end: number; summary: string; allDay?: boolean };
+  event: {
+    start: number;
+    end: number;
+    summary: string;
+    allDay?: boolean;
+    status?: "confirmed" | "tentative" | "cancelled";
+    eventKind?: "event" | "workingLocation" | "task";
+  };
 };
+
+// Heuristic list of summary tokens that mark events as self-scheduled focus
+// blocks — things the user can reshuffle when a meaningful meeting appears.
+// Matched as whole words so "readers" / "focus group" don't count. Kept
+// narrow on purpose: prefer false negatives (agent still refuses overlap)
+// over false positives (agent stomps a real meeting).
+const SOFT_SUMMARY_TOKENS = [
+  "grind",
+  "focus",
+  "study",
+  "deep work",
+  "reflect",
+  "read",
+  "reading",
+  "work block",
+  "block",
+  "catch up",
+  "admin",
+];
+function isSoftEvent(e: BusyEventRow["event"]): boolean {
+  if (e.allDay === true) return true;
+  if (e.status === "tentative") return true;
+  if (e.eventKind === "task") return true;
+  const lower = (e.summary ?? "").toLowerCase();
+  for (const token of SOFT_SUMMARY_TOKENS) {
+    const re = new RegExp(`\\b${token.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\b`, "i");
+    if (re.test(lower)) return true;
+  }
+  return false;
+}
 
 /** Returns a human/tool-readable error string, or null if spacing is OK. */
 export function timedProposalSpacingError(
@@ -17,8 +54,10 @@ export function timedProposalSpacingError(
   userTimeZone: string | undefined,
 ): string | null {
   for (const { event: e } of rows) {
-    // All-day blocks are contextual in the UI; they must not block timed proposals.
-    if (e.allDay === true) continue;
+    // Soft blocks — all-day, tentative, tasks, or focus/grind/read/admin-style
+    // summaries — don't reject a proposal. The user treats them as movable
+    // and explicitly asked not to be forced to say "can overlap" for these.
+    if (isSoftEvent(e)) continue;
     const eStart = e.start;
     const eEnd = e.end;
     const overlaps = start < eEnd && end > eStart;

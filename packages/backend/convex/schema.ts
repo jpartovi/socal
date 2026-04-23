@@ -89,6 +89,14 @@ export default defineSchema({
     // pull or after a 410-Gone reset.
     syncToken: v.optional(v.string()),
     lastSyncedAt: v.optional(v.number()),
+    // One-time marker: when the `colorId` feature shipped, existing rows
+    // had no per-event color data. The next syncUser after deploy detects
+    // the missing marker, resets `syncToken` to force a full re-pull, and
+    // sets this timestamp so the migration runs once per calendar. Absent
+    // on calendars that predate the feature; set after the backfill reset
+    // fires (not after the sync completes — clearing syncToken is enough
+    // to self-heal if the sync errors mid-flight).
+    colorIdBackfilledAt: v.optional(v.number()),
   })
     .index("by_account", ["googleAccountId"])
     .index("by_account_and_cal_id", ["googleAccountId", "googleCalendarId"]),
@@ -114,6 +122,11 @@ export default defineSchema({
     htmlLink: v.optional(v.string()),
     updatedAt: v.number(),
     colorOverride: v.optional(v.string()),
+    // Google Calendar's per-event colorId ("1"–"11"). When present, the event
+    // renders in that palette color instead of the calendar's default. A
+    // local `colorOverride` still wins if set. Absent if the user hasn't
+    // customized the event color in Google.
+    colorId: v.optional(v.string()),
     eventKind: v.optional(
       v.union(v.literal("event"), v.literal("workingLocation"), v.literal("task")),
     ),
@@ -141,6 +154,21 @@ export default defineSchema({
     .index("by_calendar", ["calendarId"])
     .index("by_calendar_and_event", ["calendarId", "googleEventId"])
     .index("by_calendar_and_start", ["calendarId", "start"]),
+
+  // Socal-side invite rows that layer on top of a real Google Calendar event.
+  // One row per (event, invitee) so we can show "X invited you" banners and
+  // reconcile adds/removes idempotently from both create and edit paths.
+  // Deliberately separate from Google's own attendee list: these are
+  // socal-user-to-socal-user invites keyed by userId, not email.
+  eventInvites: defineTable({
+    eventId: v.id("events"),
+    inviteeUserId: v.id("users"),
+    inviterUserId: v.id("users"),
+    createdAt: v.number(),
+  })
+    .index("by_event", ["eventId"])
+    .index("by_invitee", ["inviteeUserId"])
+    .index("by_event_and_invitee", ["eventId", "inviteeUserId"]),
 
   // Agent-authored event proposals awaiting user approval. Rows start
   // `pending`; on accept/reject they're patched to the corresponding terminal
@@ -170,7 +198,15 @@ export default defineSchema({
     // Set when status transitions to "accepted" so a future audit/history
     // view can link a proposal to the real event it became.
     createdEventId: v.optional(v.id("events")),
+    // Option-set proposals: when the agent offers N alternative time slots,
+    // all N share a groupId and know their index/size so the UI can show
+    // "1 of 3". Accepting any sibling auto-rejects the rest (see
+    // proposals._markAccepted). Single proposals leave these unset.
+    groupId: v.optional(v.string()),
+    groupIndex: v.optional(v.number()),
+    groupSize: v.optional(v.number()),
   })
     .index("by_user_and_status", ["userId", "status"])
-    .index("by_calendar_and_start", ["calendarId", "start"]),
+    .index("by_calendar_and_start", ["calendarId", "start"])
+    .index("by_group", ["groupId"]),
 });

@@ -4,7 +4,10 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(1 0 0);
+  /* Warm off-white canvas with a barely-there peach tint. Pairs with the
+     pastel-gradient overlay painted by `<main>` in app/page.tsx so the whole
+     surface reads as "airy morning" rather than "clinical white". */
+  --background: oklch(0.985 0.006 55);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
@@ -86,4 +89,29 @@
   body {
     @apply bg-background text-foreground antialiased;
   }
+}
+
+/* Sparkle-glow pulse for a just-created proposal — fires ~3s after the agent
+   returns so the user's eye lands on the suggestion. Pure CSS so no JS
+   timer inside the animation loop. */
+@keyframes proposalSparkle {
+  0% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.55),
+      0 0 0 0 rgba(236, 72, 153, 0.35);
+    transform: scale(1);
+  }
+  40% {
+    box-shadow: 0 0 0 6px rgba(168, 85, 247, 0),
+      0 0 18px 4px rgba(236, 72, 153, 0.35);
+    transform: scale(1.02);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(168, 85, 247, 0), 0 0 0 0 rgba(236, 72, 153, 0);
+    transform: scale(1);
+  }
+}
+
+.sparkle-pulse {
+  animation: proposalSparkle 1.4s ease-out 2;
+  will-change: transform, box-shadow;
 }

@@ -225,6 +225,7 @@ export const createBatch = mutation({
         allDay: v.boolean(),
       }),
     ),
+    participantFriendUserIds: v.optional(v.array(v.id("users"))),
   },
   returns: v.array(v.id("eventProposals")),
   handler: async (ctx, args) => {
@@ -247,6 +248,10 @@ export const createBatch = mutation({
     if (calendar.accessRole !== "owner" && calendar.accessRole !== "writer") {
       throw new ConvexError("Calendar is read-only");
     }
+    const friendIds = dedupeFriendUserIds(args.participantFriendUserIds ?? []);
+    for (const fid of friendIds) {
+      await assertAcceptedFriendship(ctx, args.userId, fid);
+    }
     const groupId = globalThis.crypto.randomUUID();
     const groupSize = args.options.length;
     const proposedAt = Date.now();
@@ -267,6 +272,8 @@ export const createBatch = mutation({
         groupId,
         groupIndex: i,
         groupSize,
+        participantFriendUserIds:
+          friendIds.length > 0 ? friendIds : undefined,
       });
       ids.push(id);
     }
@@ -312,6 +319,7 @@ export const listForUserInRange = query({
         userId: Id<"users">;
         firstName: string;
         lastName: string;
+        photoUrl: string | null;
       }>;
     }> = [];
     for (const proposal of inRange) {
@@ -381,10 +389,34 @@ export const listGroup = query({
         backgroundColor: string;
         foregroundColor: string;
       };
+      participants: Array<{
+        userId: Id<"users">;
+        firstName: string;
+        lastName: string;
+        photoUrl: string | null;
+      }>;
     }> = [];
     for (const proposal of pending) {
       const calendar = await ctx.db.get(proposal.calendarId);
       if (calendar === null) continue;
+      const participantIds = proposal.participantFriendUserIds ?? [];
+      const participants: Array<{
+        userId: Id<"users">;
+        firstName: string;
+        lastName: string;
+        photoUrl: string | null;
+      }> = [];
+      for (const uid of participantIds) {
+        const u = await ctx.db.get(uid);
+        if (u === null) continue;
+        const photoUrl = await resolvePhotoUrlForUser(ctx, u);
+        participants.push({
+          userId: u._id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          photoUrl,
+        });
+      }
       results.push({
         proposal,
         calendar: {
@@ -394,6 +426,7 @@ export const listGroup = query({
           backgroundColor: calendar.colorOverride ?? calendar.backgroundColor,
           foregroundColor: calendar.foregroundColor,
         },
+        participants,
       });
     }
     return results;

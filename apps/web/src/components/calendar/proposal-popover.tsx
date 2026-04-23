@@ -90,7 +90,6 @@ function ProposalPopoverBody({
   const [isPending, setIsPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-<<<<<<< HEAD
   // Option-set proposals: fetch every pending sibling in the same group so
   // the user can page through them in-place. Single proposals skip the
   // query and render the original row alone.
@@ -115,10 +114,7 @@ function ProposalPopoverBody({
   );
   const canPaginate = groupRows.length > 1;
 
-  const { proposal, calendar } = activeRow;
-=======
-  const { proposal, calendar, participants } = row;
->>>>>>> main
+  const { proposal, calendar, participants } = activeRow;
   const color = calendar.backgroundColor;
   const accountName = calendar.summaryOverride ?? calendar.summary;
   const timeLabel = formatProposalTimeRange(

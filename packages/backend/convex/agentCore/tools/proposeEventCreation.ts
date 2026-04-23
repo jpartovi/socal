@@ -18,26 +18,19 @@ import type { ToolDeps } from "./deps";
 // set so accepting one auto-rejects the others (see proposals._markAccepted).
 //
 // Validation is all-or-nothing: if ANY option fails spacing validation against
-// the user's own calendar, no proposals are inserted and the tool returns a
-// FAILED string naming the offending option. This keeps the agent from
-// partially committing and having to reason about half-inserted groups.
+// the user's own calendar OR any participant friend's calendar, no proposals
+// are inserted and the tool returns a FAILED string naming the offending
+// option. This keeps the agent from partially committing and having to reason
+// about half-inserted groups.
 export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterface {
   const { ctx, userId, userTimeZone, runState } = deps;
   return tool(
     async (args) => {
       console.log("[agent-tool] propose_event_creation call", {
-<<<<<<< HEAD
         optionCount: args.options.length,
         summaries: args.options.map((o) => o.summary),
-=======
-        summary: args.summary,
-        startIso: args.startIso,
-        endIso: args.endIso,
-        allDay: args.allDay,
-        location: args.location,
         calendarId: args.calendarId,
         googleAccountEmail: args.googleAccountEmail,
->>>>>>> main
         spacingValidationOverride: args.spacingValidationOverride,
         participantFriendUserIds: args.participantFriendUserIds,
       });
@@ -47,7 +40,11 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
       if (args.options.length > 3) {
         return "FAILED — propose_event_creation: at most 3 options are allowed in a single call.";
       }
-<<<<<<< HEAD
+
+      const rawFriendIds = args.participantFriendUserIds ?? [];
+      const participantFriendUserIds = [
+        ...new Set(rawFriendIds.map((id) => id as Id<"users">)),
+      ];
 
       type ParsedOption = {
         index: number;
@@ -80,20 +77,6 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           summary: opt.summary,
           description: opt.description,
           location: opt.location,
-=======
-      const rawFriendIds = args.participantFriendUserIds ?? [];
-      const participantFriendUserIds = [
-        ...new Set(rawFriendIds.map((id) => id as Id<"users">)),
-      ];
-      const allDay = args.allDay ?? false;
-      if (!allDay && !args.spacingValidationOverride) {
-        const busyRows = await ctx.runQuery(api.events.listForUserInRange, {
-          userId,
-          start: start - PROPOSE_MIN_GAP_MS,
-          end: end + PROPOSE_MIN_GAP_MS,
-        });
-        const spacingErr = timedProposalSpacingError(
->>>>>>> main
           start,
           end,
           allDay: opt.allDay ?? false,
@@ -120,8 +103,45 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
             );
           }
         }
-        const rangeStart = start - PROPOSE_MIN_GAP_MS;
-        const rangeEnd = end + PROPOSE_MIN_GAP_MS;
+      }
+
+      // Spacing validation per option. All-or-nothing: a single failure aborts
+      // the whole batch. Fetch each option's busy window in parallel so a
+      // 3-option call is one round-trip instead of three.
+      if (!args.spacingValidationOverride) {
+        const timed = parsed.filter((p) => !p.allDay);
+        const userBusyByIndex = await Promise.all(
+          timed.map((opt) =>
+            ctx.runQuery(api.events.listForUserInRange, {
+              userId,
+              start: opt.start - PROPOSE_MIN_GAP_MS,
+              end: opt.end + PROPOSE_MIN_GAP_MS,
+            }),
+          ),
+        );
+        for (let i = 0; i < timed.length; i++) {
+          const opt = timed[i];
+          const spacingErr = timedProposalSpacingError(
+            opt.start,
+            opt.end,
+            userBusyByIndex[i],
+            userTimeZone,
+          );
+          if (spacingErr !== null) {
+            console.log("[agent-tool] propose_event_creation rejected", {
+              optionIndex: opt.index,
+              summary: opt.summary,
+              reason: spacingErr,
+            });
+            return (
+              `FAILED — propose_event_creation: option ${opt.index + 1} (${opt.summary}) failed spacing check. ` +
+              `${spacingErr} No proposals were created — fix that option (or drop it) and retry the whole batch.`
+            );
+          }
+        }
+
+        // Friend participant validation: each friend must be accepted, and
+        // each option must fit their calendar too.
         for (const friendId of participantFriendUserIds) {
           const friendUser = await ctx.runQuery(api.users.getById, {
             userId: friendId,
@@ -138,78 +158,42 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           if (!allowed) {
             return (
               `FAILED — propose_event_creation: ${friendLabel} is not an accepted friend ` +
-              `(participantFriendUserIds). No proposal was created. Ask the user to connect as friends first.`
+              `(participantFriendUserIds). No proposals were created. Ask the user to connect as friends first.`
             );
           }
-          const friendBusy = await ctx.runQuery(api.events.listForUserInRange, {
-            userId: friendId,
-            start: rangeStart,
-            end: rangeEnd,
-          });
-          const friendSpacingErr = timedProposalSpacingError(
-            start,
-            end,
-            friendBusy,
-            userTimeZone,
-            { subjectDescription: `${friendLabel}'s calendar` },
-          );
-          if (friendSpacingErr !== null) {
-            console.log("[agent-tool] propose_event_creation rejected (friend)", {
-              summary: args.summary,
-              friendId,
-              reason: friendSpacingErr,
-            });
-            return `FAILED — propose_event_creation: ${friendSpacingErr}`;
-          }
-        }
-      }
-<<<<<<< HEAD
-
-      // Spacing validation per option. All-or-nothing: a single failure aborts
-      // the whole batch. Fetch each option's busy window in parallel so a
-      // 3-option call is one round-trip instead of three.
-      if (!args.spacingValidationOverride) {
-        const timed = parsed.filter((p) => !p.allDay);
-        const busyByIndex = await Promise.all(
-          timed.map((opt) =>
-            ctx.runQuery(api.events.listForUserInRange, {
-              userId,
-              start: opt.start - PROPOSE_MIN_GAP_MS,
-              end: opt.end + PROPOSE_MIN_GAP_MS,
-            }),
-          ),
-        );
-        for (let i = 0; i < timed.length; i++) {
-          const opt = timed[i];
-          const spacingErr = timedProposalSpacingError(
-            opt.start,
-            opt.end,
-            busyByIndex[i],
-            userTimeZone,
-          );
-          if (spacingErr !== null) {
-            console.log("[agent-tool] propose_event_creation rejected", {
-              optionIndex: opt.index,
-              summary: opt.summary,
-              reason: spacingErr,
-            });
-            return (
-              `FAILED — propose_event_creation: option ${opt.index + 1} (${opt.summary}) failed spacing check. ` +
-              `${spacingErr} No proposals were created — fix that option (or drop it) and retry the whole batch.`
+          for (const opt of timed) {
+            const friendBusy = await ctx.runQuery(
+              api.events.listForUserInRange,
+              {
+                userId: friendId,
+                start: opt.start - PROPOSE_MIN_GAP_MS,
+                end: opt.end + PROPOSE_MIN_GAP_MS,
+              },
             );
+            const friendSpacingErr = timedProposalSpacingError(
+              opt.start,
+              opt.end,
+              friendBusy,
+              userTimeZone,
+              { subjectDescription: `${friendLabel}'s calendar` },
+            );
+            if (friendSpacingErr !== null) {
+              console.log("[agent-tool] propose_event_creation rejected (friend)", {
+                optionIndex: opt.index,
+                summary: opt.summary,
+                friendId,
+                reason: friendSpacingErr,
+              });
+              return (
+                `FAILED — propose_event_creation: option ${opt.index + 1} (${opt.summary}) — ${friendSpacingErr}`
+              );
+            }
           }
         }
       }
 
-      const calendarId =
-        (args.calendarId as Id<"calendars"> | undefined) ??
-        (await ctx.runQuery(api.calendars.defaultWritable, { userId }));
-      if (!calendarId) {
-        return (
-          "FAILED — propose_event_creation: no writable calendar is connected for this user. " +
-          "No proposals were created."
-        );
-=======
+      // Resolve calendar: calendarId wins; else resolve via Google account
+      // email; else default writable calendar on the default account.
       let calendarId: Id<"calendars"> | null = null;
       if (args.calendarId) {
         calendarId = args.calendarId as Id<"calendars">;
@@ -223,12 +207,16 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
         if (!calendarId) {
           return email
             ? "FAILED — propose_event_creation: no connected Google account matches that email " +
-                "(use the exact address from Calendar accounts). No proposal was created."
+                "(use the exact address from Calendar accounts). No proposals were created."
             : "FAILED — propose_event_creation: no writable calendar is connected for this user. " +
-                "No proposal was created.";
+                "No proposals were created.";
         }
->>>>>>> main
       }
+
+      const optionalFriends =
+        participantFriendUserIds.length > 0
+          ? participantFriendUserIds
+          : undefined;
 
       // Single-option calls still use `create` so they stay groupless — keeps
       // the UI from rendering a "1/1" badge for solo proposals.
@@ -243,6 +231,7 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           start: only.start,
           end: only.end,
           allDay: only.allDay,
+          participantFriendUserIds: optionalFriends,
         });
         runState.proposalIds.push(proposalId);
         console.log("[agent-tool] propose_event_creation result", {
@@ -255,7 +244,6 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
       const proposalIds = await ctx.runMutation(api.proposals.createBatch, {
         userId,
         calendarId,
-<<<<<<< HEAD
         options: parsed.map((p) => ({
           summary: p.summary,
           description: p.description,
@@ -264,18 +252,7 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           end: p.end,
           allDay: p.allDay,
         })),
-=======
-        summary: args.summary,
-        description: args.description,
-        location: args.location,
-        start,
-        end,
-        allDay,
-        participantFriendUserIds:
-          participantFriendUserIds.length > 0
-            ? participantFriendUserIds
-            : undefined,
->>>>>>> main
+        participantFriendUserIds: optionalFriends,
       });
       for (const id of proposalIds) runState.proposalIds.push(id);
       console.log("[agent-tool] propose_event_creation batch result", {
@@ -294,11 +271,10 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
     {
       name: "propose_event_creation",
       description:
-<<<<<<< HEAD
         "Create PENDING event proposal(s) for the user. Does NOT create events directly — the user sees ghost cards and Accepts/Rejects. " +
         "Always takes an `options` array (1–3 entries). Use multiple options when the request is loose and the user would benefit from choices (e.g. 'dinner this week', 'coffee sometime tomorrow'). Use a single option when the user specified an exact time, or when the schedule only admits one reasonable slot. " +
         "When you provide multiple options, they are LINKED: all options appear together, and accepting one auto-rejects the others. All options should represent the SAME underlying event (same summary) at DIFFERENT times — don't mix unrelated events into one call. " +
-        "Gather context first with get_user_schedule (and get_friend_schedule if relevant). For timed options, the server rejects any option that overlaps another timed event or sits within 15 min of one unless spacingValidationOverride is true. All-day existing events don't block. " +
+        "Gather context first with get_user_schedule (and get_friend_schedule if relevant). For timed options, the server rejects any option that overlaps another timed event or sits within 15 min of one — on the user's calendar AND on each accepted friend in participantFriendUserIds (their enabled calendars) — unless spacingValidationOverride is true. All-day existing events don't block. " +
         "Validation is all-or-nothing: if any single option fails, NO proposals are created — read the FAILED message for which option and why, fix or drop that option, and retry the whole batch. Do not blindly retry the same args.",
       schema: z.object({
         options: z
@@ -308,7 +284,8 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
                 .string()
                 .describe(
                   "Short title for the event, e.g. 'Walk' or 'Lunch with Alex'. " +
-                    "When offering multiple options, all should share the same summary — they're the same event at different times.",
+                    "When offering multiple options, all should share the same summary — they're the same event at different times. " +
+                    "Use a neutral activity (e.g. 'Lunch', 'Coffee') when participantFriendUserIds is set, since attendees see it.",
                 ),
               startIso: z
                 .string()
@@ -338,22 +315,6 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           )
           .min(1)
           .max(3)
-=======
-        "Create a PENDING event proposal for the user. Does NOT create the event directly. " +
-        "The user will see a ghost card in their calendar and can Accept or Reject it. " +
-        "Use this whenever the user asks to add, book, schedule, or block time for something. " +
-        "Gather enough context first (e.g. get_user_schedule to check for conflicts) — do not call speculatively. " +
-        "For timed events (allDay false or omitted), the server rejects proposals that overlap other timed events or sit within 15 minutes of another timed event's start/end on the user's calendar — and the same rules apply to each accepted friend listed in participantFriendUserIds (their enabled calendars), unless spacingValidationOverride is true — all-day events are ignored for this check. Use the override only when the user explicitly asked for back-to-back or overlapping placement. " +
-        "If the call fails validation, the tool returns a message starting with FAILED — read that message (it explains overlap vs too-tight gap and what to change); do not blindly retry the same times.",
-      schema: z.object({
-        summary: z
-          .string()
-          .describe(
-            "Calendar title visible to all attendees. Neutral activity when participantFriendUserIds is set (e.g. 'Lunch', 'Coffee'); solo events may be more specific (e.g. 'Dentist', 'Walk').",
-          ),
-        startIso: z
-          .string()
->>>>>>> main
           .describe(
             "1–3 alternative time slots for the same event. Provide multiple when the user's ask is loose (e.g. 'dinner this week'); provide one when they specified an exact time.",
           ),
@@ -361,24 +322,19 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           .string()
           .optional()
           .describe(
-<<<<<<< HEAD
-            "Optional Convex calendar id for all options. Leave unset to use the user's default writable calendar.",
-=======
-            "Optional Convex calendar id. If set, wins over googleAccountEmail.",
+            "Optional Convex calendar id for all options. If set, wins over googleAccountEmail. Leave unset to use the user's default writable calendar.",
           ),
         googleAccountEmail: z
           .string()
           .optional()
           .describe(
             "Connected Google account email; resolves like writableCalendarForUser with accountEmail (primary writable on that account). Omit with calendarId; if both omitted, uses default Google account (same as quick-create).",
->>>>>>> main
           ),
         spacingValidationOverride: z
           .boolean()
           .optional()
           .describe(
-<<<<<<< HEAD
-            "If true, skip server checks that block overlap and <15 min gaps vs existing events for every option. " +
+            "If true, skip server checks that block overlap and <15 min gaps vs existing events for every option — on the user's calendar AND on participants' calendars. " +
               "Only set when the user explicitly asked for back-to-back or overlapping events. Default false.",
           ),
         timeOfDayOverride: z
@@ -387,11 +343,8 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           .describe(
             "If true, skip the server check that confines meal/coffee/workout summaries to their normal hours " +
               "(e.g. dinner 6pm–9pm, coffee 8am–4pm). Only set when the user EXPLICITLY asked for an off-hours " +
-              "version (\"dinner at 3pm\", \"midnight coffee\"). Default false — do not flip this on just because " +
+              'version ("dinner at 3pm", "midnight coffee"). Default false — do not flip this on just because ' +
               "the first time you picked was rejected.",
-=======
-            "If true, skip server checks that block overlap and <15 min gaps vs the user's and participants' existing timed events. " +
-              "Only set when the user explicitly asked for back-to-back or overlapping events. Default false.",
           ),
         participantFriendUserIds: z
           .array(z.string())
@@ -399,7 +352,6 @@ export function proposeEventCreationTool(deps: ToolDeps): StructuredToolInterfac
           .describe(
             "Convex user ids of accepted friends to invite as Google Calendar attendees when the user accepts the proposal. " +
               "Use ids from find_friend (e.g. when scheduling with a named friend). Omit for solo events.",
->>>>>>> main
           ),
       }),
     },

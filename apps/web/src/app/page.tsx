@@ -524,7 +524,6 @@ function CalendarHome() {
             });
         }}
       />
-<<<<<<< HEAD
       <HighlightProvider ids={highlightedProposalIds}>
         {events === undefined ? (
           <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
@@ -549,14 +548,14 @@ function CalendarHome() {
             }
             numDays={numDaysFor(view)}
             onMoveEvent={onMoveEvent}
-            onCreateEvent={defaultCalendarId ? onCreateEvent : null}
+            onCreateEvent={writableCalendarId ? onCreateEvent : null}
             createEventAppearance={
-              defaultCalendar
+              writableCalendar
                 ? {
                     backgroundColor:
-                      defaultCalendar.colorOverride ??
-                      defaultCalendar.backgroundColor,
-                    foregroundColor: defaultCalendar.foregroundColor,
+                      writableCalendar.colorOverride ??
+                      writableCalendar.backgroundColor,
+                    foregroundColor: writableCalendar.foregroundColor,
                   }
                 : null
             }
@@ -568,47 +567,6 @@ function CalendarHome() {
           />
         )}
       </HighlightProvider>
-=======
-      {events === undefined ? (
-        <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
-      ) : view === "agenda" ? (
-        <AgendaView
-          events={events}
-          proposals={proposals ?? []}
-          anchor={effectiveAnchor}
-        />
-      ) : view === "month" ? (
-        <MonthView
-          events={events}
-          proposals={proposals ?? []}
-          anchor={effectiveAnchor}
-        />
-      ) : (
-        <DaysView
-          events={events}
-          proposals={proposals ?? []}
-          anchor={effectiveAnchor}
-          numDays={numDaysFor(view)}
-          onMoveEvent={onMoveEvent}
-          onCreateEvent={writableCalendarId ? onCreateEvent : null}
-          createEventAppearance={
-            writableCalendar
-              ? {
-                  backgroundColor:
-                    writableCalendar.colorOverride ??
-                    writableCalendar.backgroundColor,
-                  foregroundColor: writableCalendar.foregroundColor,
-                }
-              : null
-          }
-          draftEvent={draftEvent}
-          onDraftDismiss={() => setDraftEvent(null)}
-          onDraftCommit={commitDraftEvent}
-          createdEventId={createdEventId}
-          onCreateDismiss={() => setCreatedEventId(null)}
-        />
-      )}
->>>>>>> main
       <div className="mx-auto w-full max-w-2xl pt-1">
         <AgentInput />
       </div>

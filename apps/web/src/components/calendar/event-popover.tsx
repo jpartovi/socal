@@ -90,6 +90,64 @@ function writable(row: EventRow): boolean {
   return r === "owner" || r === "writer";
 }
 
+type EventAttendee = NonNullable<EventRow["event"]["attendees"]>[number];
+
+/** Organizer first, then self, then alphabetical by display name or email. */
+function sortEventAttendees(attendees: EventAttendee[]): EventAttendee[] {
+  return [...attendees].sort((a, b) => {
+    const rank = (x: EventAttendee) => {
+      if (x.organizer) return 0;
+      if (x.self) return 1;
+      return 2;
+    };
+    const d = rank(a) - rank(b);
+    if (d !== 0) return d;
+    const sortKey = (x: EventAttendee) => {
+      const friendName =
+        x.friendFirstName !== undefined && x.friendLastName !== undefined
+          ? `${x.friendFirstName} ${x.friendLastName}`.trim()
+          : "";
+      const label = friendName || (x.displayName ?? x.email);
+      return label.toLowerCase();
+    };
+    return sortKey(a).localeCompare(sortKey(b));
+  });
+}
+
+function EventGuestListItem({ attendee: a }: { attendee: EventAttendee }) {
+  const friendFullName =
+    a.friendFirstName !== undefined && a.friendLastName !== undefined
+      ? `${a.friendFirstName} ${a.friendLastName}`.trim()
+      : "";
+  const isFriend = friendFullName !== "";
+
+  let label: string;
+  if (a.self) {
+    label = "You";
+  } else if (isFriend) {
+    label = friendFullName;
+  } else {
+    const dn = a.displayName?.trim();
+    label = dn && dn.length > 0 ? dn : a.email;
+  }
+
+  return (
+    <li className="flex items-start gap-2">
+      <Avatar
+        name={label}
+        photoUrl={a.photoUrl ?? undefined}
+        size="sm"
+        className="mt-0.5"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="break-words text-xs font-medium leading-snug">
+          {label}
+        </div>
+      </div>
+    </li>
+  );
+}
+
 function EventPopoverBody({
   row,
   onEdit,
@@ -228,6 +286,16 @@ function EventPopoverBody({
           <p className="whitespace-pre-wrap break-words text-xs leading-snug text-foreground/80">
             {descriptionText}
           </p>
+        </Row>
+      )}
+
+      {event.attendees && event.attendees.length > 0 && (
+        <Row icon={<PeopleIcon />}>
+          <ul className="flex max-h-48 flex-col gap-2 overflow-y-auto pr-1">
+            {sortEventAttendees(event.attendees).map((a) => (
+              <EventGuestListItem key={a.email} attendee={a} />
+            ))}
+          </ul>
         </Row>
       )}
 

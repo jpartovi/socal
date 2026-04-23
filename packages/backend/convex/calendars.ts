@@ -7,9 +7,12 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { resolvePrimaryGoogleAccountForUser } from "./googleAccounts";
 import { getValidAccessToken } from "./googleTokens";
+
+type ReadCtx = QueryCtx | MutationCtx;
 
 const accessRole = v.union(
   v.literal("owner"),
@@ -52,54 +55,35 @@ export const listByAccount = query({
   },
 });
 
-// Default writable calendar for quick-create flows: the primary calendar of
-// the user's first Google account, provided it's writable. Returns null if
-// the user has no writable primary calendar.
-export const defaultWritable = query({
-  args: { userId: v.id("users") },
-  returns: v.union(v.id("calendars"), v.null()),
-  handler: async (ctx, args) => {
-    const accounts = await ctx.db
-      .query("googleAccounts")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const acc of accounts) {
-      const cals = await ctx.db
-        .query("calendars")
-        .withIndex("by_account", (q) => q.eq("googleAccountId", acc._id))
-        .collect();
-      const primary = cals.find(
-        (c) =>
-          c.isPrimary &&
-          (c.accessRole === "owner" || c.accessRole === "writer"),
-      );
-      if (primary) return primary._id;
-    }
-    return null;
+/**
+ * Writable calendar for creating events: primary calendar with owner/writer on a Google account.
+ * - Default Google account: users.primaryGoogleAccountId (set on first connect; user can change in
+ *   Calendar accounts), else legacy fallback to first connected account — see resolvePrimaryGoogleAccountForUser.
+ * - Default calendar on that account: always derived (isPrimary + write access), never stored.
+ * Optional accountEmail targets a specific connected account by address instead of the default account.
+ */
+export const writableCalendarForUser = query({
+  args: {
+    userId: v.id("users"),
+    accountEmail: v.optional(v.string()),
   },
-});
-
-export const defaultWritableCalendar = query({
-  args: { userId: v.id("users") },
   returns: v.union(calendarDoc, v.null()),
   handler: async (ctx, args) => {
-    const accounts = await ctx.db
-      .query("googleAccounts")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .collect();
-    for (const acc of accounts) {
-      const cals = await ctx.db
-        .query("calendars")
-        .withIndex("by_account", (q) => q.eq("googleAccountId", acc._id))
+    const trimmed = args.accountEmail?.trim();
+    if (trimmed) {
+      const want = normalizeAccountEmail(trimmed);
+      if (!want) return null;
+      const accounts = await ctx.db
+        .query("googleAccounts")
+        .withIndex("by_user", (q) => q.eq("userId", args.userId))
         .collect();
-      const primary = cals.find(
-        (c) =>
-          c.isPrimary &&
-          (c.accessRole === "owner" || c.accessRole === "writer"),
+      const acc = accounts.find(
+        (a) => normalizeAccountEmail(a.email) === want,
       );
-      if (primary) return primary;
+      if (acc === undefined) return null;
+      return await primaryWritableCalendarOnAccount(ctx, acc._id);
     }
-    return null;
+    return await resolvePrimaryGoogleAccountCalendar(ctx, args.userId);
   },
 });
 
@@ -471,4 +455,48 @@ async function assertOwnsCalendar(
     throw new ConvexError("You do not own this calendar");
   }
   return cal;
+}
+
+function normalizeAccountEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** Primary calendar row with write access for this Google account (derived, not user-stored). */
+async function primaryWritableCalendarOnAccount(
+  ctx: ReadCtx,
+  googleAccountId: Id<"googleAccounts">,
+): Promise<Doc<"calendars"> | null> {
+  const cals = await ctx.db
+    .query("calendars")
+    .withIndex("by_account", (q) => q.eq("googleAccountId", googleAccountId))
+    .collect();
+  return (
+    cals.find(
+      (c) =>
+        c.isPrimary &&
+        (c.accessRole === "owner" || c.accessRole === "writer"),
+    ) ?? null
+  );
+}
+
+/** Default writable calendar for the user's starred Google account, else first connected account. */
+async function resolvePrimaryGoogleAccountCalendar(
+  ctx: ReadCtx,
+  userId: Id<"users">,
+): Promise<Doc<"calendars"> | null> {
+  const primaryAcc = await resolvePrimaryGoogleAccountForUser(ctx, userId);
+  if (primaryAcc !== null) {
+    const cal = await primaryWritableCalendarOnAccount(ctx, primaryAcc._id);
+    if (cal) return cal;
+  }
+  const accounts = await ctx.db
+    .query("googleAccounts")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  for (const acc of accounts) {
+    if (primaryAcc !== null && acc._id === primaryAcc._id) continue;
+    const cal = await primaryWritableCalendarOnAccount(ctx, acc._id);
+    if (cal) return cal;
+  }
+  return null;
 }

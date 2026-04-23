@@ -275,11 +275,11 @@ function CalendarHome() {
   const forceResyncUser = useAction(api.events.forceResyncUser);
   const patchEventTimes = useAction(api.events.patchEventTimes);
   const createEvent = useAction(api.events.createEvent);
-  const defaultCalendar = useQuery(
-    api.calendars.defaultWritableCalendar,
+  const writableCalendar = useQuery(
+    api.calendars.writableCalendarForUser,
     userId ? { userId } : "skip",
   );
-  const defaultCalendarId = defaultCalendar?._id ?? null;
+  const writableCalendarId = writableCalendar?._id ?? null;
 
   const onMoveEvent = useCallback(
     async (args: {
@@ -330,21 +330,22 @@ function CalendarHome() {
 
   const onCreateEvent = useCallback(
     (args: { start: number; end: number }) => {
-      if (!defaultCalendar) return;
+      if (!writableCalendar) return;
       setCreatedEventId(null);
       setCommittedDraftEventId(null);
       setDraftEvent({
         id: `draft-${args.start}-${args.end}-${Date.now()}`,
-        calendarId: defaultCalendar._id,
-        calendarName: defaultCalendar.summaryOverride ?? defaultCalendar.summary,
+        calendarId: writableCalendar._id,
+        calendarName:
+          writableCalendar.summaryOverride ?? writableCalendar.summary,
         backgroundColor:
-          defaultCalendar.colorOverride ?? defaultCalendar.backgroundColor,
-        foregroundColor: defaultCalendar.foregroundColor,
+          writableCalendar.colorOverride ?? writableCalendar.backgroundColor,
+        foregroundColor: writableCalendar.foregroundColor,
         start: args.start,
         end: args.end,
       });
     },
-    [defaultCalendar],
+    [writableCalendar],
   );
 
   const commitDraftEvent = useCallback(
@@ -523,6 +524,7 @@ function CalendarHome() {
             });
         }}
       />
+<<<<<<< HEAD
       <HighlightProvider ids={highlightedProposalIds}>
         {events === undefined ? (
           <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
@@ -566,6 +568,47 @@ function CalendarHome() {
           />
         )}
       </HighlightProvider>
+=======
+      {events === undefined ? (
+        <p className="px-2 py-8 text-sm text-muted-foreground">Loading…</p>
+      ) : view === "agenda" ? (
+        <AgendaView
+          events={events}
+          proposals={proposals ?? []}
+          anchor={effectiveAnchor}
+        />
+      ) : view === "month" ? (
+        <MonthView
+          events={events}
+          proposals={proposals ?? []}
+          anchor={effectiveAnchor}
+        />
+      ) : (
+        <DaysView
+          events={events}
+          proposals={proposals ?? []}
+          anchor={effectiveAnchor}
+          numDays={numDaysFor(view)}
+          onMoveEvent={onMoveEvent}
+          onCreateEvent={writableCalendarId ? onCreateEvent : null}
+          createEventAppearance={
+            writableCalendar
+              ? {
+                  backgroundColor:
+                    writableCalendar.colorOverride ??
+                    writableCalendar.backgroundColor,
+                  foregroundColor: writableCalendar.foregroundColor,
+                }
+              : null
+          }
+          draftEvent={draftEvent}
+          onDraftDismiss={() => setDraftEvent(null)}
+          onDraftCommit={commitDraftEvent}
+          createdEventId={createdEventId}
+          onCreateDismiss={() => setCreatedEventId(null)}
+        />
+      )}
+>>>>>>> main
       <div className="mx-auto w-full max-w-2xl pt-1">
         <AgentInput />
       </div>

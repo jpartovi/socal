@@ -1,4 +1,5 @@
 import { ConvexError, v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { resolvePhoneInvitesForNewUser } from "./friendships";
 import { normalizePhone } from "./phone";
@@ -15,6 +16,7 @@ const userDoc = v.object({
   photoStorageId: v.optional(v.id("_storage")),
   useDefaultAvatar: v.optional(v.boolean()),
   timeZone: v.optional(v.string()),
+  primaryGoogleAccountId: v.optional(v.id("googleAccounts")),
 });
 
 const userWithPhotoUrl = v.object({
@@ -26,6 +28,7 @@ const userWithPhotoUrl = v.object({
   photoStorageId: v.optional(v.id("_storage")),
   useDefaultAvatar: v.optional(v.boolean()),
   timeZone: v.optional(v.string()),
+  primaryGoogleAccountId: v.optional(v.id("googleAccounts")),
   photoUrl: v.union(v.string(), v.null()),
 });
 
@@ -230,5 +233,26 @@ export const setPhoto = mutation({
       useDefaultAvatar: args.storageId !== null,
     });
     return null;
+  },
+});
+
+/** One-time: removes legacy `defaultCalendarId` from user documents. Run after deploy while schema uses schemaValidation:false, then remove that option from schema.ts and redeploy. */
+export const stripLegacyDefaultCalendarIds = mutation({
+  args: {},
+  returns: v.object({ patched: v.number() }),
+  handler: async (ctx) => {
+    const users = await ctx.db.query("users").collect();
+    let patched = 0;
+    for (const u of users) {
+      const legacy = u as Doc<"users"> & {
+        defaultCalendarId?: Id<"calendars">;
+      };
+      if (legacy.defaultCalendarId === undefined) continue;
+      const { defaultCalendarId: _drop, ...clean } = legacy;
+      void _drop;
+      await ctx.db.replace(u._id, clean as Doc<"users">);
+      patched++;
+    }
+    return { patched };
   },
 });

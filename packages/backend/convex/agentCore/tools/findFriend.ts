@@ -22,6 +22,7 @@ export function findFriendTool(deps: ToolDeps): StructuredToolInterface {
             firstName: f.user.firstName,
             lastName: f.user.lastName,
             fullName: full,
+            inviteEmail: f.user.inviteEmail,
           };
         })
         .filter((f) => {
@@ -45,7 +46,7 @@ export function findFriendTool(deps: ToolDeps): StructuredToolInterface {
     {
       name: "find_friend",
       description:
-        "Look up a friend of the user by name or partial name. Returns an array of candidates with userId, firstName, lastName. " +
+        "Look up a friend of the user by name or partial name. Returns an array of candidates with userId, firstName, lastName, inviteEmail (their chosen Google address for calendar invites, or null). " +
         "Use this before get_friend_schedule to resolve the friend's userId. " +
         "If multiple candidates match, prefer the closest full-name match; if ambiguous, pick the most likely one and proceed — do not ask the user.",
       schema: z.object({

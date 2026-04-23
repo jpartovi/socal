@@ -1369,7 +1369,7 @@ type FriendConnection = {
   user: {
     _id: Id<"users">;
     firstName: string;
-    primaryEmail: string | null;
+    inviteEmail: string | null;
   };
 };
 
@@ -1399,8 +1399,8 @@ function parseAttendeesWithFriends(
     const match = friends.find(
       (f) => f.user.firstName.toLowerCase() === lower,
     );
-    if (!match || !match.user.primaryEmail) continue;
-    const email = match.user.primaryEmail.toLowerCase();
+    if (!match || !match.user.inviteEmail) continue;
+    const email = match.user.inviteEmail.toLowerCase();
     if (seen.has(email)) continue;
     seen.add(email);
     out.push(email);

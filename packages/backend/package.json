@@ -21,8 +21,12 @@
     "dev": "convex dev",
     "build": "convex codegen",
     "deploy": "convex deploy",
+    "test": "vitest run",
     "lint": "eslint . --max-warnings 0 || true",
     "typecheck": "tsc -p convex/tsconfig.json --noEmit || true"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
   },
   "dependencies": {
     "@langchain/core": "^1.1.40",

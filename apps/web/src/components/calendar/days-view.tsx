@@ -1,16 +1,22 @@
 "use client";
 
+import { api } from "@socal/backend/convex/_generated/api";
 import type { Id } from "@socal/backend/convex/_generated/dataModel";
+import { Avatar } from "@socal/ui/components/avatar";
 import { Input } from "@socal/ui/components/input";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@socal/ui/components/popover";
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { useQuery } from "convex/react";
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  darken,
+  eventAccent,
   eventColor,
+  eventSoftFill,
   eventTextColor,
   readableTextColor,
 } from "@/components/calendar/colors";
@@ -30,6 +36,34 @@ import {
 } from "@/components/calendar/lib";
 import { ProposalItem } from "@/components/calendar/proposal-item";
 import type { EventRow, ProposalRow } from "@/components/calendar/types";
+import {
+  buildConflictOptions,
+  findConflict,
+  type Conflict,
+  type ConflictOption,
+} from "@/components/calendar/use-conflict-resolver";
+import { useAuth } from "@/lib/auth";
+
+// Ghost-text autocomplete helper shared by the draft-event "what?" and "who?"
+// inputs. Given the trailing token at the caret, find the first candidate
+// whose full form extends the partial by at least one character. Returns
+// `full` (the completed word) and `ghost` (just the suffix to paint in gray).
+function ghostCompletion(
+  value: string,
+  candidates: ReadonlyArray<string>,
+): { full: string; ghost: string } | null {
+  const m = /(\S+)$/.exec(value);
+  if (!m) return null;
+  const partial = m[1];
+  if (partial.length < 1) return null;
+  const lower = partial.toLowerCase();
+  for (const c of candidates) {
+    if (c.toLowerCase().startsWith(lower) && c.length > partial.length) {
+      return { full: c, ghost: c.slice(partial.length) };
+    }
+  }
+  return null;
+}
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const HOUR_HEIGHT = 48; // px per hour in the grid
@@ -247,6 +281,11 @@ export function DaysView({
     expectedStart: number;
     expectedEnd: number;
   } | null>(null);
+  // Inline conflict resolution state. Set when a drag would land on top of
+  // another timed event; cleared when the user picks an option or hits
+  // Escape. While this is non-null we show the resolver strip and the two
+  // involved cards animate a gentle collide.
+  const [conflict, setConflict] = useState<Conflict | null>(null);
 
   const effectiveEvents =
     pendingMove === null
@@ -306,6 +345,12 @@ export function DaysView({
       ? effectiveEvents.find((r) => (r.event._id as string) === drag.eventId) ??
         null
       : null;
+
+  const collidingIds = new Set<string>();
+  if (conflict !== null) {
+    collidingIds.add(conflict.newInterval.eventId);
+    collidingIds.add(conflict.conflict.event._id as string);
+  }
 
   useEffect(() => {
     if (!pendingMove) return;
@@ -429,6 +474,32 @@ export function DaysView({
         s.originalEnd + s.deltaMs,
       );
     }
+    const draggedRowNow = effectiveEvents.find(
+      (r) => (r.event._id as string) === s.eventId,
+    );
+    const conflictRow = draggedRowNow
+      ? findConflict({
+          proposed: { eventId: s.eventId, start: newStart, end: newEnd },
+          events: effectiveEvents,
+        })
+      : null;
+    if (draggedRowNow && conflictRow) {
+      // Don't commit yet — show the inline resolver and let the user pick.
+      // The dragged card visually snaps back to its original position (drag
+      // state is already cleared above), and the resolver strip renders
+      // anchored to the proposed landing rect.
+      setConflict({
+        newInterval: { eventId: s.eventId, start: newStart, end: newEnd },
+        conflict: conflictRow,
+        options: buildConflictOptions({
+          proposed: { eventId: s.eventId, start: newStart, end: newEnd },
+          dragged: draggedRowNow,
+          conflict: conflictRow,
+        }),
+      });
+      return;
+    }
+
     setPendingMove({
       eventId: s.eventId,
       expectedStart: newStart,
@@ -443,16 +514,44 @@ export function DaysView({
     });
   }
 
+  // Apply one of the three conflict-resolver options. Each option carries a
+  // pre-built MovePatch; we just shove it through the same `onMoveEvent`
+  // callback the normal drag uses, then clear the resolver.
+  function applyConflictOption(option: ConflictOption) {
+    const patch = option.patch;
+    setPendingMove({
+      eventId: patch.eventId as string,
+      expectedStart: patch.start,
+      expectedEnd: patch.end,
+    });
+    onMoveEvent(patch);
+    setConflict(null);
+  }
+
+  // Escape cancels the resolver (nothing is committed — the dragged event
+  // stays at its original time because endDrag never called onMoveEvent).
+  useEffect(() => {
+    if (conflict === null) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setConflict(null);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [conflict]);
+
   // Unified scroll: header and all-day row are sticky inside the same
   // scrolling container as the hour grid, so every grid shares the same inner
   // width — columns line up regardless of scrollbar presence.
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl">
       <ScrollableGrid days={days}>
-        <div className="sticky top-0 z-30 bg-background">
-          <div className="grid border-b bg-muted/30" style={columnsStyle}>
+        <div className="sticky top-0 z-30 bg-background/60 backdrop-blur-md">
+          <div className="grid" style={columnsStyle}>
             <div
-              className="flex items-end justify-end pb-1 pr-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground"
+              className="flex items-end justify-end pb-2 pr-2 text-[10px] font-medium tracking-wider text-muted-foreground"
               title={tz}
             >
               {tz}
@@ -510,11 +609,67 @@ export function DaysView({
                 onEventPointerUp={endDrag}
                 createdEventId={createdEventId}
                 onCreateDismiss={onCreateDismiss}
+                collidingIds={collidingIds}
               />
             );
           })}
         </div>
       </ScrollableGrid>
+      {conflict !== null && (
+        <ConflictResolverStrip
+          conflict={conflict}
+          onApply={applyConflictOption}
+          onDismiss={() => setConflict(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ConflictResolverStrip({
+  conflict,
+  onApply,
+  onDismiss,
+}: {
+  conflict: Conflict;
+  onApply: (option: ConflictOption) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-label="Resolve conflict"
+      className="pointer-events-auto absolute bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border/50 bg-popover/85 px-2 py-1.5 text-xs shadow-xl shadow-black/10 backdrop-blur-xl supports-[backdrop-filter]:bg-popover/70"
+    >
+      <span className="px-2 text-muted-foreground">Resolve overlap?</span>
+      {conflict.options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          onClick={() => onApply(o)}
+          className="rounded-full bg-foreground/5 px-3 py-1 font-medium transition-transform duration-150 ease-out hover:scale-[1.03] hover:bg-foreground/10 active:scale-[0.97]"
+        >
+          {o.label}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Cancel"
+        className="ml-1 flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-transform duration-150 ease-out hover:scale-[1.05] hover:bg-muted hover:text-foreground active:scale-[0.95]"
+        title="Cancel (Esc)"
+      >
+        <svg
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.5}
+          strokeLinecap="round"
+          className="h-3.5 w-3.5"
+        >
+          <path d="M4 4l8 8M12 4l-8 8" />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -555,18 +710,39 @@ function ScrollableGrid({
 function DayColumnHeader({ date }: { date: Date }) {
   const today = sameDay(date, new Date());
   return (
-    <div className="flex flex-col items-center border-l px-1 py-2">
-      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+    <div className="flex flex-col items-center gap-0.5 px-1 pb-3 pt-2">
+      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
         {date.toLocaleDateString(undefined, { weekday: "short" })}
       </span>
-      <span
-        className={`text-lg ${
-          today ? "text-primary font-semibold" : "text-foreground"
-        }`}
-      >
+      <span className="relative flex h-9 w-9 items-center justify-center text-2xl font-medium leading-none tracking-tight text-foreground/90">
         {date.getDate()}
+        {today && (
+          <HandDrawnCircle
+            className="pointer-events-none absolute left-1/2 top-1/2 h-[170%] w-[170%] -translate-x-1/2 -translate-y-1/2 text-foreground"
+          />
+        )}
       </span>
     </div>
+  );
+}
+
+// Single-stroke wobbly oval. Starts near the top-right, loops counter-
+// clockwise, and overshoots slightly so the ends don't meet — that overshoot
+// is what gives the "quick pen gesture" feel instead of a rubber-stamp O.
+export function HandDrawnCircle({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 40 40"
+      className={className}
+      aria-hidden
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M 28 6 C 36 9, 37 18, 34 26 C 31 33, 22 36, 14 34 C 6 31, 3 22, 6 13 C 9 6, 19 3, 27 6 C 29 6.5, 30 7 30 8" />
+    </svg>
   );
 }
 
@@ -756,14 +932,14 @@ function AllDayRow({
   return (
     <div
       ref={gridRef}
-      className="grid border-b bg-muted/10"
+      className="grid"
       style={{
         ...columnsStyle,
         gridTemplateRows: `repeat(${lanes}, 22px)`,
       }}
     >
       <div
-        className="flex items-start justify-end px-1 py-1 text-[10px] uppercase text-muted-foreground"
+        className="flex items-start justify-end px-1 py-1 text-[10px] text-muted-foreground/70"
         style={{ gridColumn: 1, gridRow: `1 / span ${lanes}` }}
       >
         All day
@@ -819,25 +995,25 @@ function AllDayRow({
               onPointerUp={end}
               onPointerCancel={end}
               onClickCapture={handleClickCapture}
-              className={`relative mx-0.5 my-0.5 flex items-center overflow-hidden rounded px-1.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2 ${
+              className={`relative mx-0.5 my-0.5 flex items-center gap-1.5 overflow-hidden rounded-full px-2.5 text-left text-[11px] leading-tight outline-none transition-transform duration-150 ease-out will-change-transform hover:scale-[1.01] active:scale-[0.99] focus-visible:ring-2 ${
                 isWorkingLocation(s.row) ? "border bg-transparent" : ""
               } ${writable ? "cursor-grab active:cursor-grabbing" : ""}`}
               style={{
                 gridColumn: `${2 + startCol} / ${3 + endCol}`,
                 gridRow: `${s.lane + 1}`,
                 backgroundColor: isWorkingLocation(s.row)
-                  ? "transparent"
-                  : eventColor(s.row),
+                  ? undefined
+                  : eventSoftFill(s.row),
                 borderColor: isWorkingLocation(s.row)
                   ? eventColor(s.row)
                   : undefined,
-                color: isWorkingLocation(s.row)
-                  ? eventColor(s.row)
-                  : eventTextColor(s.row),
+                color: eventAccent(s.row),
                 opacity: activeDrag ? 0.85 : 1,
                 boxShadow: activeDrag
                   ? "0 0 0 2px var(--ring, rgba(99,102,241,0.6))"
-                  : undefined,
+                  : isWorkingLocation(s.row)
+                    ? undefined
+                    : "0 1px 2px rgba(16,24,40,0.04)",
                 touchAction: writable ? "none" : undefined,
               }}
               title={s.row.event.summary}
@@ -914,14 +1090,90 @@ function DraftEventPopover({
   onDismiss: () => void;
   onCommit: (fields: DraftCommitFields) => Promise<void>;
 }) {
+  const { userId } = useAuth();
   const [summary, setSummary] = useState("");
   const [who, setWho] = useState("");
   const [location, setLocation] = useState("");
   const [open, setOpen] = useState(true);
   const committedRef = useRef(false);
-  const attendees = parseAttendeeInput(who);
+
+  // Autofill corpus: this user's top 100 words from their recent event titles.
+  // The query is cheap (single user's events over ~180d) and the result rarely
+  // changes, so Convex caches it across draft opens.
+  const commonWords = useQuery(
+    api.events.commonSummaryWords,
+    userId ? { userId } : "skip",
+  );
+  const friends = useQuery(
+    api.friendships.listConnections,
+    userId ? { userId } : "skip",
+  );
+
+  const friendList = useMemo(() => friends?.friends ?? [], [friends]);
+  const attendees = parseAttendeesWithFriends(who, friendList);
   const hasContent =
     summary.trim() !== "" || location.trim() !== "" || attendees.length > 0;
+
+  // Auto-populate "who" when a friend's first name appears as a whole word in
+  // the title ("jude <> anika lunch" → add jude to who). Tracked per-id so we
+  // don't re-append after the user manually removes a name.
+  const autoAddedFriendIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (friendList.length === 0) return;
+    const toAdd: string[] = [];
+    const existingTokens = new Set(
+      who
+        .toLowerCase()
+        .split(/[\s,;]+/)
+        .filter((t) => t.length > 0),
+    );
+    for (const f of friendList) {
+      const first = f.user.firstName.trim();
+      if (!first) continue;
+      if (autoAddedFriendIds.current.has(f.user._id)) continue;
+      const re = new RegExp(`\\b${escapeRegex(first)}\\b`, "i");
+      if (!re.test(summary)) continue;
+      autoAddedFriendIds.current.add(f.user._id);
+      if (existingTokens.has(first.toLowerCase())) continue;
+      toAdd.push(first);
+    }
+    if (toAdd.length > 0) {
+      setWho((prev) =>
+        prev.trim() === ""
+          ? toAdd.join(" ")
+          : `${prev.trimEnd()} ${toAdd.join(" ")}`,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summary, friendList]);
+
+  // Ghost-text autocompletion. Given the text and caret-at-end, match the
+  // trailing token against a candidate list and return the suffix that would
+  // complete the word. Shared by the "what?" and "who?" fields — each gets its
+  // own candidate list.
+  const summaryCompletion = useMemo(
+    () => ghostCompletion(summary, commonWords ?? []),
+    [summary, commonWords],
+  );
+  const whoCompletion = useMemo(() => {
+    const names = friendList.map((f) => f.user.firstName);
+    return ghostCompletion(who, names);
+  }, [who, friendList]);
+
+  const acceptSummary = () => {
+    if (!summaryCompletion) return;
+    const m = /(\S+)$/.exec(summary);
+    if (!m) return;
+    const head = summary.slice(0, summary.length - m[1].length);
+    setSummary(`${head}${summaryCompletion.full} `);
+  };
+  const acceptWho = () => {
+    if (!whoCompletion) return;
+    const m = /(\S+)$/.exec(who);
+    if (!m) return;
+    const head = who.slice(0, who.length - m[1].length);
+    setWho(`${head}${whoCompletion.full} `);
+  };
 
   async function commit() {
     if (committedRef.current || !hasContent) return;
@@ -936,6 +1188,34 @@ function DraftEventPopover({
     }
   }
 
+  function summaryKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Tab" && summaryCompletion) {
+      e.preventDefault();
+      acceptSummary();
+      return;
+    }
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (hasContent) void commit();
+    else {
+      setOpen(false);
+      onDismiss();
+    }
+  }
+  function whoKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Tab" && whoCompletion) {
+      e.preventDefault();
+      acceptWho();
+      return;
+    }
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (hasContent) void commit();
+    else {
+      setOpen(false);
+      onDismiss();
+    }
+  }
   function submitOnEnter(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
     e.preventDefault();
@@ -968,10 +1248,9 @@ function DraftEventPopover({
         align="start"
         sideOffset={8}
         collisionPadding={12}
-        className="w-[min(680px,calc(100vw-32px))] overflow-hidden rounded-lg p-0 text-sm"
+        className="w-[min(560px,calc(100vw-32px))] overflow-hidden rounded-3xl border border-white/40 bg-white/5 p-0 text-sm shadow-[0_1px_0_rgba(255,255,255,0.35)_inset,0_24px_60px_rgba(16,24,40,0.14),0_2px_8px_rgba(16,24,40,0.06)] backdrop-blur-2xl backdrop-saturate-150 dark:border-white/10 dark:bg-neutral-900/10"
       >
         <div
-          className="bg-card text-card-foreground"
           onKeyDownCapture={(e) => {
             if (e.key !== "Enter") return;
             const target = e.target as HTMLElement | null;
@@ -981,11 +1260,10 @@ function DraftEventPopover({
             else onDismiss();
           }}
         >
-          <div className="flex h-9 items-center justify-between bg-muted/50 px-4">
-            <span className="text-base text-muted-foreground">=</span>
+          <div className="flex h-9 items-center justify-end px-3 pt-2">
             <button
               type="button"
-              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/5 hover:text-foreground"
               onClick={() => {
                 if (hasContent) void commit();
                 else {
@@ -995,65 +1273,87 @@ function DraftEventPopover({
               }}
               aria-label="Close"
             >
-              x
+              <svg
+                viewBox="0 0 16 16"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 3l10 10" />
+                <path d="M13 3L3 13" />
+              </svg>
             </button>
           </div>
-          <div className="space-y-4 px-8 pb-6 pt-5">
-            <Input
-              autoFocus
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              onKeyDown={submitOnEnter}
-              placeholder="what?"
-              className="h-12 rounded-none border-0 border-b bg-transparent px-0 text-3xl font-normal shadow-none placeholder:text-muted-foreground/45 focus-visible:ring-0"
-            />
-            <div className="flex flex-wrap gap-2">
-              <span className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
-                Event
-              </span>
-              {["Task", "Out of office", "Focus time", "Working location"].map(
-                (label) => (
-                  <span
-                    key={label}
-                    className="px-2 py-2 text-sm font-medium text-muted-foreground"
-                  >
-                    {label}
+          <div className="space-y-5 px-7 pb-6 pt-2">
+            <div className="relative">
+              {summaryCompletion !== null && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 flex items-center whitespace-pre text-2xl font-medium leading-none tracking-tight"
+                >
+                  <span className="invisible">{summary}</span>
+                  <span className="text-muted-foreground/40">
+                    {summaryCompletion.ghost}
                   </span>
-                ),
+                </div>
               )}
+              <input
+                autoFocus
+                value={summary}
+                onChange={(e) => setSummary(e.target.value)}
+                onKeyDown={summaryKeyDown}
+                placeholder="what?"
+                className="relative block w-full border-0 bg-transparent p-0 text-2xl font-medium leading-none tracking-tight text-foreground placeholder:text-muted-foreground/45 focus:outline-none"
+              />
             </div>
-            <div className="grid grid-cols-[24px_1fr] items-center gap-x-4 gap-y-3">
+            <div className="grid grid-cols-[20px_1fr] items-center gap-x-4 gap-y-3">
               <ClockIcon />
-              <div className="rounded-md bg-muted px-3 py-2 text-sm">
+              <div className="w-fit rounded-full border border-white/25 bg-white/0 px-3 py-1.5 text-xs text-foreground/80 dark:border-white/10">
                 {new Date(draft.start).toLocaleDateString(undefined, {
                   weekday: "long",
                   month: "long",
                   day: "numeric",
                 })}{" "}
-                {formatTime(draft.start)} - {formatTime(draft.end)}
+                {formatTime(draft.start)} – {formatTime(draft.end)}
               </div>
               <PeopleIcon />
-              <Input
-                value={who}
-                onChange={(e) => setWho(e.target.value)}
-                onKeyDown={submitOnEnter}
-                placeholder="who?"
-                className="h-9 border-0 bg-transparent px-0 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
-              />
+              <div className="relative">
+                {whoCompletion !== null && (
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute inset-0 flex items-center whitespace-pre px-0 text-sm"
+                  >
+                    <span className="invisible">{who}</span>
+                    <span className="text-muted-foreground/40">
+                      {whoCompletion.ghost}
+                    </span>
+                  </div>
+                )}
+                <Input
+                  value={who}
+                  onChange={(e) => setWho(e.target.value)}
+                  onKeyDown={whoKeyDown}
+                  placeholder="who?"
+                  className="relative h-8 border-0 bg-transparent px-0 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-0"
+                />
+              </div>
               <LocationPinIcon />
               <Input
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
                 onKeyDown={submitOnEnter}
                 placeholder="where?"
-                className="h-9 border-0 bg-transparent px-0 text-sm shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
+                className="h-8 border-0 bg-transparent px-0 text-sm shadow-none placeholder:text-muted-foreground/60 focus-visible:ring-0"
               />
               <CalendarTinyIcon />
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>{draft.calendarName}</span>
                 <span
                   aria-hidden
-                  className="h-3 w-3 rounded-full"
+                  className="h-2.5 w-2.5 rounded-full"
                   style={{ backgroundColor: draft.backgroundColor }}
                 />
               </div>
@@ -1065,13 +1365,43 @@ function DraftEventPopover({
   );
 }
 
-function parseAttendeeInput(value: string): string[] {
+type FriendConnection = {
+  user: {
+    _id: Id<"users">;
+    firstName: string;
+    inviteEmail: string | null;
+  };
+};
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Accept either an email-format token or a friend's first name (resolved to
+// their primary Google email). The popover's "who" field is free-form, so we
+// mix both in the same list and de-dupe by the resolved email.
+function parseAttendeesWithFriends(
+  value: string,
+  friends: ReadonlyArray<FriendConnection>,
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const token of value.split(/[\s,;]+/)) {
-    const email = token.trim().toLowerCase();
-    if (!email || seen.has(email)) continue;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+    const raw = token.trim();
+    if (!raw) continue;
+    const lower = raw.toLowerCase();
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lower)) {
+      if (seen.has(lower)) continue;
+      seen.add(lower);
+      out.push(lower);
+      continue;
+    }
+    const match = friends.find(
+      (f) => f.user.firstName.toLowerCase() === lower,
+    );
+    if (!match || !match.user.inviteEmail) continue;
+    const email = match.user.inviteEmail.toLowerCase();
+    if (seen.has(email)) continue;
     seen.add(email);
     out.push(email);
   }
@@ -1092,22 +1422,24 @@ const DraftEventBlock = forwardRef<
     <button
       ref={ref}
       type="button"
-      className={`absolute left-1 right-1 flex overflow-hidden rounded px-1.5 py-0.5 text-left text-[11px] leading-tight shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        showStacked ? "flex-col items-start" : "items-center gap-1"
+      className={`absolute left-1 right-1 flex overflow-hidden rounded-[5px] px-2 py-1 text-left text-[11px] leading-tight outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+        showStacked ? "flex-col items-start gap-0.5" : "items-center gap-1.5"
       }`}
       style={{
         top: `${topPx}px`,
         height: `${heightPx}px`,
         zIndex: 20,
-        backgroundColor: draft.backgroundColor,
-        color: readableTextColor(draft.backgroundColor),
+        backgroundColor: `${draft.backgroundColor}66`,
+        color: darken(draft.backgroundColor, 0.4),
+        boxShadow:
+          "0 1px 2px rgba(16,24,40,0.04), 0 6px 16px rgba(16,24,40,0.05)",
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >
       <span className="max-w-full truncate font-medium">
         {draft.summary?.trim() || "(no title)"}
       </span>
-      <span className="max-w-full truncate opacity-80">
+      <span className="max-w-full truncate opacity-70">
         {showStacked ? time : `, ${time}`}
       </span>
     </button>
@@ -1134,6 +1466,7 @@ function DayColumn({
   onEventPointerUp,
   createdEventId,
   onCreateDismiss,
+  collidingIds,
 }: {
   dayStart: Date;
   dayIndex: number;
@@ -1159,6 +1492,7 @@ function DayColumn({
   onEventPointerUp: (e: React.PointerEvent<HTMLElement>) => void;
   createdEventId: Id<"events"> | null;
   onCreateDismiss: () => void;
+  collidingIds: Set<string>;
 }) {
   const isToday = sameDay(dayStart, new Date());
   const dayStartMs = dayStart.getTime();
@@ -1286,9 +1620,7 @@ function DayColumn({
   return (
     <div
       ref={columnRef}
-      className={`relative border-l ${
-        onCreateEvent ? "cursor-crosshair" : ""
-      }`}
+      className={`relative ${onCreateEvent ? "cursor-crosshair" : ""}`}
       style={{ height: `${totalHeightPx}px`, touchAction: "none" }}
       onPointerDown={beginCreate}
       onPointerMove={moveCreate}
@@ -1298,7 +1630,7 @@ function DayColumn({
       {HOURS.map((h) => (
         <div
           key={h}
-          className="absolute left-0 right-0 border-t border-muted/50"
+          className="absolute left-0 right-0 border-t border-foreground/[0.04]"
           style={{ top: `${h * HOUR_HEIGHT}px` }}
         />
       ))}
@@ -1416,6 +1748,11 @@ function DayColumn({
         };
         const isNewlyCreated =
           createdEventId !== null && p.row.event._id === createdEventId;
+        const isColliding = collidingIds.has(eventIdStr);
+        const socalAttendees = (p.row.event.attendees ?? []).filter(
+          (a) => a.socalUserId && !a.self,
+        );
+        const showAvatars = socalAttendees.length > 0 && heightPx >= 20;
         return (
           <EventPopover
             key={`${dayStart.getTime()}-${p.row.event._id}`}
@@ -1439,60 +1776,83 @@ function DayColumn({
               onPointerUp={onEventPointerUp}
               onPointerCancel={onEventPointerUp}
               onClickCapture={handleClickCapture}
-              className={`absolute flex items-start justify-start overflow-hidden rounded px-1 py-0.5 text-left text-[11px] leading-tight outline-none transition hover:brightness-95 focus-visible:ring-2 focus-visible:ring-offset-1 ${
+              className={`absolute flex items-start justify-start overflow-hidden rounded-[5px] px-2 py-1 text-left text-[11px] leading-tight outline-none transition-transform duration-150 ease-out will-change-transform hover:scale-[1.01] active:scale-[0.99] focus-visible:ring-2 focus-visible:ring-offset-1 ${
                 writable ? "cursor-grab active:cursor-grabbing" : ""
               } ${
                 task
-                  ? "gap-1 bg-transparent shadow-none"
+                  ? "gap-1.5 bg-transparent shadow-none"
                   : workingLocation
-                    ? "gap-1 border-l-4 bg-transparent shadow-none"
-                    : "flex-col shadow-sm"
+                    ? "gap-1.5 border-l-4 bg-transparent shadow-none"
+                    : "gap-1.5"
               }`}
               style={{
                 top: `${topPx}px`,
                 height: `${heightPx}px`,
-                left: `calc(${leftPct}% + 2px)`,
-                width: `calc(${widthPct}% - 4px)`,
-                backgroundColor: task || workingLocation
-                    ? "transparent"
-                    : eventColor(p.row),
-                borderColor:
-                  workingLocation ? eventColor(p.row) : undefined,
+                left: `calc(${leftPct}% + 3px)`,
+                width: `calc(${widthPct}% - 6px)`,
+                backgroundColor:
+                  !task && !workingLocation
+                    ? eventSoftFill(p.row)
+                    : undefined,
+                borderColor: workingLocation ? eventColor(p.row) : undefined,
                 color:
                   task || workingLocation
                     ? eventColor(p.row)
-                    : eventTextColor(p.row),
+                    : eventAccent(p.row),
+                boxShadow: isColliding
+                  ? `0 0 0 2px ${eventAccent(p.row)}`
+                  : !task && !workingLocation
+                    ? "0 1px 2px rgba(16,24,40,0.04), 0 6px 16px rgba(16,24,40,0.05)"
+                    : undefined,
+                transform: isColliding ? "scale(0.97)" : undefined,
                 touchAction: writable ? "none" : undefined,
                 opacity: hideForDrag ? 0 : 1,
                 pointerEvents: hideForDrag ? "none" : undefined,
               }}
               title={`${eventKindLabel(p.row)}: ${p.row.event.summary} · ${formatTimeRange(p.row.event.start, p.row.event.end)}`}
             >
-              {task && (
+              {task ? (
                 <TaskCheckbox
                   className="mt-0.5 size-3 shrink-0"
                   color={eventColor(p.row)}
                 />
-              )}
-              {workingLocation && (
+              ) : workingLocation ? (
                 <BuildingIcon className="mt-0.5 size-3 shrink-0" />
-              )}
+              ) : null}
               <div className="min-w-0 flex-1">
                 <div className="w-full truncate font-medium">
                   {p.row.event.summary}
                   {showInlineTime && !task && !workingLocation && (
-                    <span className="font-normal opacity-80">
+                    <span className="font-normal opacity-70">
                       {" · "}
                       {formatTimeRange(p.row.event.start, p.row.event.end)}
                     </span>
                   )}
                 </div>
                 {showStackedTime && !task && !workingLocation && (
-                  <div className="w-full truncate opacity-80">
+                  <div className="w-full truncate opacity-70">
                     {formatTimeRange(p.row.event.start, p.row.event.end)}
                   </div>
                 )}
               </div>
+              {showAvatars && (
+                <div className="flex shrink-0 items-center -space-x-1">
+                  {socalAttendees.slice(0, 2).map((a) => (
+                    <Avatar
+                      key={a.email}
+                      name={a.displayName ?? a.email}
+                      photoUrl={a.photoUrl ?? null}
+                      size="xs"
+                      className="size-4 border-0 text-[8px]"
+                    />
+                  ))}
+                  {socalAttendees.length > 2 && (
+                    <span className="ml-0.5 text-[9px] font-medium opacity-70">
+                      +{socalAttendees.length - 2}
+                    </span>
+                  )}
+                </div>
+              )}
               {showResizeHandle && (
                 <span
                   aria-hidden

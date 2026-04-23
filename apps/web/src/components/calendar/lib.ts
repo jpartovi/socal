@@ -25,9 +25,10 @@ export function addMonths(d: Date, n: number): Date {
 }
 
 export function startOfWeek(d: Date): Date {
-  // Sunday-start, matching Google Calendar's default.
+  // Monday-start (ISO). getDay(): Sun=0..Sat=6 → offset (getDay()+6)%7
+  // maps Mon→0, Tue→1, ..., Sun→6.
   const out = startOfDay(d);
-  out.setDate(out.getDate() - out.getDay());
+  out.setDate(out.getDate() - ((out.getDay() + 6) % 7));
   return out;
 }
 

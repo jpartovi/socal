@@ -2,6 +2,7 @@
 
 import { api } from "@socal/backend/convex/_generated/api";
 import type { Id } from "@socal/backend/convex/_generated/dataModel";
+import { Avatar } from "@socal/ui/components/avatar";
 import { Button } from "@socal/ui/components/button";
 import { Input } from "@socal/ui/components/input";
 import {
@@ -23,7 +24,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
+import { useAgentQueue, type QueuedTask } from "@/lib/agent-queue";
 import { useAuth } from "@/lib/auth";
+import { formatTimeRange, startOfDay } from "@/components/calendar/lib";
 
 const SIDEBAR_WIDTH_KEY = "socal.sidebarWidth";
 const CALENDAR_GROUP_COLLAPSED_KEY = "socal.calendarSidebar.collapsedGroups";
@@ -178,10 +181,12 @@ export function CalendarsSidebar() {
   return (
     <aside
       ref={asideRef}
-      className="relative flex shrink-0 flex-col gap-6 border-r px-4 pb-4 pt-3"
+      className="relative flex shrink-0 flex-col gap-6 px-4 pb-4 pt-3"
       style={{ width: `${width}px` }}
     >
+      <AgentQueueSection />
       <FriendsSection userId={userId} notify={notify} />
+      <NotificationsSection userId={userId} />
       <div className="flex flex-col gap-4">
         {accounts === undefined ? (
           <p className="px-1 text-xs text-muted-foreground">Loading...</p>
@@ -203,7 +208,7 @@ export function CalendarsSidebar() {
       </div>
       <Link
         href="/calendar-accounts"
-        className="mt-auto rounded-md border px-3 py-2 text-center text-xs text-muted-foreground hover:bg-muted"
+        className="mt-auto rounded-full bg-foreground/5 px-3 py-2 text-center text-xs text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
       >
         Manage accounts
       </Link>
@@ -376,6 +381,369 @@ function FriendsSection({
       </div>
     </section>
   );
+}
+
+function AgentQueueSection() {
+  const { tasks, dismiss, activeCount, capacity } = useAgentQueue();
+  if (tasks.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-2">
+      <div className="flex items-center justify-between px-1 pb-0.5">
+        <h4 className="text-[10px] text-muted-foreground/70">Agent</h4>
+        <span className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground/60">
+          {activeCount}/{capacity}
+        </span>
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {tasks.map((t) => (
+          <AgentTaskRow key={t.id} task={t} onDismiss={() => dismiss(t.id)} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function AgentTaskRow({
+  task,
+  onDismiss,
+}: {
+  task: QueuedTask;
+  onDismiss: () => void;
+}) {
+  const tone = agentTaskTone(task.status);
+  const subline = agentTaskSubline(task);
+  const resolved =
+    task.status === "done" ||
+    task.status === "failed" ||
+    task.status === "no_action";
+  const dismissable = resolved || task.status === "queued";
+  return (
+    <li
+      className={`group relative flex items-start gap-2 overflow-hidden rounded-xl px-2.5 py-2 transition duration-200 ${tone.bg}`}
+      style={{ boxShadow: `inset 3px 0 0 ${tone.accent}` }}
+    >
+      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+        <AgentTaskIcon status={task.status} color={tone.accent} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[12px] leading-tight text-foreground/90">
+          {task.message}
+        </p>
+        <p className="mt-0.5 text-[10px] leading-tight text-muted-foreground/80">
+          {subline}
+        </p>
+      </div>
+      {dismissable && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className={`text-muted-foreground transition-opacity hover:text-foreground ${
+            resolved
+              ? "opacity-60 hover:opacity-100"
+              : "opacity-0 group-hover:opacity-60 hover:opacity-100"
+          }`}
+        >
+          <svg viewBox="0 0 16 16" className="size-3" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+            <path d="M4 4l8 8M12 4l-8 8" />
+          </svg>
+        </button>
+      )}
+    </li>
+  );
+}
+
+function AgentTaskIcon({
+  status,
+  color,
+}: {
+  status: QueuedTask["status"];
+  color: string;
+}) {
+  if (status === "running") {
+    return (
+      <svg viewBox="0 0 16 16" className="size-3.5 animate-spin" aria-hidden>
+        <circle cx="8" cy="8" r="6" fill="none" stroke={color} strokeOpacity={0.25} strokeWidth={2} />
+        <path d="M 14 8 A 6 6 0 0 0 8 2" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (status === "queued") {
+    return (
+      <span
+        className="size-1.5 rounded-full"
+        style={{ backgroundColor: color }}
+        aria-hidden
+      />
+    );
+  }
+  if (status === "done") {
+    return (
+      <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M3 8l3.5 3.5L13 5" />
+      </svg>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" aria-hidden>
+        <path d="M4 4l8 8M12 4l-8 8" />
+      </svg>
+    );
+  }
+  // no_action
+  return (
+    <svg viewBox="0 0 16 16" className="size-3.5" fill="none" stroke={color} strokeWidth={2} strokeLinecap="round" aria-hidden>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 5v4" />
+      <path d="M8 11.25v.01" />
+    </svg>
+  );
+}
+
+function agentTaskTone(status: QueuedTask["status"]): {
+  bg: string;
+  accent: string;
+} {
+  switch (status) {
+    case "running":
+      return { bg: "bg-primary/5", accent: "var(--primary)" };
+    case "queued":
+      return { bg: "bg-muted/40", accent: "var(--muted-foreground)" };
+    case "done":
+      return { bg: "bg-emerald-500/8", accent: "rgb(16 185 129)" };
+    case "failed":
+      return { bg: "bg-destructive/6", accent: "var(--destructive)" };
+    case "no_action":
+      return { bg: "bg-muted/40", accent: "var(--muted-foreground)" };
+  }
+}
+
+function agentTaskSubline(task: QueuedTask): string {
+  switch (task.status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Thinking…";
+    case "done": {
+      const n = task.proposalIds?.length ?? 0;
+      if (n === 0) return "Done";
+      return n === 1 ? "1 proposal ready" : `${n} proposals ready`;
+    }
+    case "no_action":
+      return task.noActionMessage ?? "Nothing to add";
+    case "failed":
+      return task.error ?? "Something went wrong";
+  }
+}
+
+function NotificationsSection({ userId }: { userId: Id<"users"> }) {
+  const invites = useQuery(api.events.listRecentInvitesForUser, { userId });
+
+  const newCount =
+    invites?.filter(
+      (i) =>
+        i.status !== "cancelled" &&
+        (!i.responseStatus || i.responseStatus === "needsAction"),
+    ).length ?? 0;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <div className="flex items-center justify-between px-1 pb-0.5">
+        <h4 className="text-[10px] text-muted-foreground/70">Notifications</h4>
+        {newCount > 0 && (
+          <span className="flex items-center gap-1 text-[9px] font-medium uppercase tracking-wide text-primary">
+            <span className="relative flex size-1.5">
+              <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-60" />
+              <span className="relative inline-flex size-1.5 rounded-full bg-primary" />
+            </span>
+            {newCount} new
+          </span>
+        )}
+      </div>
+      {invites === undefined ? (
+        <p className="px-1 text-xs text-muted-foreground">Loading...</p>
+      ) : invites.length === 0 ? (
+        <p className="px-1 text-[11px] leading-5 text-muted-foreground">
+          No recent invitations
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {invites.map((invite) => (
+            <InviteRow key={invite.eventId} invite={invite} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function InviteRow({
+  invite,
+}: {
+  invite: {
+    eventId: Id<"events">;
+    summary: string;
+    start: number;
+    end: number;
+    allDay: boolean;
+    status: "confirmed" | "tentative" | "cancelled";
+    responseStatus?: "needsAction" | "declined" | "tentative" | "accepted";
+    organizerName?: string;
+    organizerEmail?: string;
+    organizerPhotoUrl?: string;
+    calendarColor: string;
+  };
+}) {
+  const title = invite.summary || "(no title)";
+  const organizerLabel =
+    invite.organizerName ?? invite.organizerEmail ?? "a friend";
+  const whenLabel = relativeDayLabel(invite.start);
+  const timeLabel = invite.allDay
+    ? "All day"
+    : formatTimeRange(invite.start, invite.end);
+  const tone = inviteTone(invite.status, invite.responseStatus);
+  const isCancelled = invite.status === "cancelled";
+  return (
+    <li
+      className={`group relative flex items-start gap-2.5 overflow-hidden rounded-xl px-2.5 py-2 transition duration-200 hover:-translate-y-px ${tone.bg} ${tone.hoverBg}`}
+      title={`${title} — from ${organizerLabel} · ${whenLabel}${
+        invite.allDay ? "" : ` · ${timeLabel}`
+      }`}
+    >
+      <div className="relative">
+        <Avatar
+          name={organizerLabel}
+          photoUrl={invite.organizerPhotoUrl}
+          size="sm"
+        />
+        {tone.showPulse && (
+          <span className="absolute -right-0.5 -top-0.5 flex size-2">
+            <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary opacity-70" />
+            <span className="relative inline-flex size-2 rounded-full border border-background bg-primary" />
+          </span>
+        )}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex items-center gap-1.5">
+          <span
+            className={`truncate text-xs font-medium ${
+              isCancelled ? "text-muted-foreground line-through" : ""
+            }`}
+          >
+            {title}
+          </span>
+        </div>
+        <span className="truncate text-[10px] text-muted-foreground">
+          from <span className="text-foreground/80">{organizerLabel}</span>
+        </span>
+        <span
+          className={`flex items-center gap-1 text-[10px] tabular-nums ${tone.meta}`}
+        >
+          <span>{whenLabel}</span>
+          <span className="opacity-50">·</span>
+          <span className="opacity-80">{timeLabel}</span>
+        </span>
+      </div>
+      <span
+        className={`mt-0.5 shrink-0 text-[9px] font-semibold uppercase tracking-[0.06em] ${tone.labelClass}`}
+      >
+        {tone.label}
+      </span>
+    </li>
+  );
+}
+
+type InviteTone = {
+  accent: string;
+  bg: string;
+  hoverBg: string;
+  meta: string;
+  label: string;
+  labelClass: string;
+  showPulse: boolean;
+};
+
+function inviteTone(
+  status: "confirmed" | "tentative" | "cancelled",
+  response: "needsAction" | "declined" | "tentative" | "accepted" | undefined,
+): InviteTone {
+  if (status === "cancelled") {
+    return {
+      accent: "var(--destructive)",
+      bg: "bg-destructive/5",
+      hoverBg: "hover:bg-destructive/10",
+      meta: "text-destructive/70",
+      label: "Cancelled",
+      labelClass: "text-destructive",
+      showPulse: false,
+    };
+  }
+  if (response === "accepted") {
+    return {
+      accent: "#10b981",
+      bg: "bg-emerald-500/5",
+      hoverBg: "hover:bg-emerald-500/10",
+      meta: "text-emerald-700/80 dark:text-emerald-300/80",
+      label: "Going",
+      labelClass: "text-emerald-600 dark:text-emerald-400",
+      showPulse: false,
+    };
+  }
+  if (response === "declined") {
+    return {
+      accent: "#a1a1aa",
+      bg: "bg-muted/30",
+      hoverBg: "hover:bg-muted/60",
+      meta: "text-muted-foreground/70",
+      label: "Declined",
+      labelClass: "text-muted-foreground",
+      showPulse: false,
+    };
+  }
+  if (response === "tentative") {
+    return {
+      accent: "#f59e0b",
+      bg: "bg-amber-500/5",
+      hoverBg: "hover:bg-amber-500/10",
+      meta: "text-amber-700/80 dark:text-amber-300/80",
+      label: "Maybe",
+      labelClass: "text-amber-600 dark:text-amber-400",
+      showPulse: false,
+    };
+  }
+  return {
+    accent: "var(--primary)",
+    bg: "bg-primary/5",
+    hoverBg: "hover:bg-primary/10",
+    meta: "text-muted-foreground",
+    label: "New",
+    labelClass: "text-primary",
+    showPulse: true,
+  };
+}
+
+// "Today", "Tomorrow", "Yesterday", weekday name for the next/previous week,
+// else "Apr 28". Event time is appended by the caller for non-all-day events.
+function relativeDayLabel(startMs: number): string {
+  const eventDay = startOfDay(new Date(startMs));
+  const today = startOfDay(new Date());
+  const diff = Math.round(
+    (eventDay.getTime() - today.getTime()) / 86_400_000,
+  );
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  if (diff > 1 && diff < 7) {
+    return new Date(startMs).toLocaleDateString(undefined, { weekday: "long" });
+  }
+  if (diff < -1 && diff > -7) {
+    return new Date(startMs).toLocaleDateString(undefined, { weekday: "long" });
+  }
+  return new Date(startMs).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function RequestRow({

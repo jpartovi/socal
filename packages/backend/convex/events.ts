@@ -77,6 +77,7 @@ const eventDoc = v.object({
   htmlLink: v.optional(v.string()),
   updatedAt: v.number(),
   colorOverride: v.optional(v.string()),
+  colorId: v.optional(v.string()),
   eventKind: v.optional(eventKind),
   // Enriched at query time with photo + socalUserId joined from googleAccounts.
   attendees: v.optional(v.array(resolvedAttendee)),
@@ -313,6 +314,192 @@ export const listForUserInRange = query({
   },
 });
 
+// Top-N words pulled from the user's own event titles over the last ~180 days.
+// Fed into the draft-event "what?" autofill so the suggestions reflect how THIS
+// user actually names things (e.g. "standup", "1:1", "Barry's"). Short stop-
+// words (a/the/on/with/etc.) are filtered so completions are substantive.
+const COMMON_WORDS_LOOKBACK_DAYS = 180;
+const COMMON_WORDS_TOP_N = 100;
+const COMMON_WORD_STOPWORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "this",
+  "that",
+  "will",
+  "your",
+  "you",
+  "are",
+  "was",
+  "has",
+  "have",
+  "our",
+  "out",
+  "via",
+  "new",
+  "not",
+]);
+
+export const commonSummaryWords = query({
+  args: { userId: v.id("users") },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    const cutoff = Date.now() - COMMON_WORDS_LOOKBACK_DAYS * 86400_000;
+    const accounts = await ctx.db
+      .query("googleAccounts")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    const freq = new Map<string, number>();
+    for (const acc of accounts) {
+      const cals = await ctx.db
+        .query("calendars")
+        .withIndex("by_account", (q) => q.eq("googleAccountId", acc._id))
+        .collect();
+      for (const cal of cals) {
+        const evts = await ctx.db
+          .query("events")
+          .withIndex("by_calendar_and_start", (q) =>
+            q.eq("calendarId", cal._id).gte("start", cutoff),
+          )
+          .collect();
+        for (const ev of evts) {
+          if (ev.status === "cancelled") continue;
+          for (const token of ev.summary.toLowerCase().split(/[^a-z0-9']+/)) {
+            if (token.length < 3) continue;
+            if (COMMON_WORD_STOPWORDS.has(token)) continue;
+            freq.set(token, (freq.get(token) ?? 0) + 1);
+          }
+        }
+      }
+    }
+    return Array.from(freq.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, COMMON_WORDS_TOP_N)
+      .map(([word]) => word);
+  },
+});
+
+// The N most recent events the signed-in user was invited to (by anyone).
+// "Invited to" = user is an attendee but not the organizer. Ordered by the
+// event row's creation time (proxy for "when the invite arrived in your
+// calendar"), newest first. If the organizer happens to be another socal
+// user we enrich with their photo/name; otherwise we fall back to the
+// Google-reported displayName/email.
+const NOTIFICATIONS_LIMIT = 4;
+
+export const listRecentInvitesForUser = query({
+  args: { userId: v.id("users") },
+  returns: v.array(
+    v.object({
+      eventId: v.id("events"),
+      calendarId: v.id("calendars"),
+      summary: v.string(),
+      start: v.number(),
+      end: v.number(),
+      allDay: v.boolean(),
+      status: eventStatus,
+      responseStatus: v.optional(attendeeResponseStatus),
+      invitedAt: v.number(),
+      organizerName: v.optional(v.string()),
+      organizerEmail: v.optional(v.string()),
+      organizerPhotoUrl: v.optional(v.string()),
+      calendarColor: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const accounts = await ctx.db
+      .query("googleAccounts")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .collect();
+    if (accounts.length === 0) return [];
+
+    type Row = {
+      eventId: Id<"events">;
+      calendarId: Id<"calendars">;
+      summary: string;
+      start: number;
+      end: number;
+      allDay: boolean;
+      status: "confirmed" | "tentative" | "cancelled";
+      responseStatus?: "needsAction" | "declined" | "tentative" | "accepted";
+      invitedAt: number;
+      organizerEmail: string;
+      organizerName?: string;
+      calendarColor: string;
+    };
+    const rows: Row[] = [];
+
+    for (const acc of accounts) {
+      const cals = await ctx.db
+        .query("calendars")
+        .withIndex("by_account", (q) => q.eq("googleAccountId", acc._id))
+        .collect();
+      for (const cal of cals) {
+        const evts = await ctx.db
+          .query("events")
+          .withIndex("by_calendar", (q) => q.eq("calendarId", cal._id))
+          .collect();
+        for (const ev of evts) {
+          if (!ev.attendees) continue;
+          const selfAttendee = ev.attendees.find((a) => a.self === true);
+          if (!selfAttendee) continue;
+          if (selfAttendee.organizer === true) continue;
+          const organizer = ev.attendees.find((a) => a.organizer === true);
+          if (!organizer) continue;
+          rows.push({
+            eventId: ev._id,
+            calendarId: cal._id,
+            summary: ev.summary,
+            start: ev.start,
+            end: ev.end,
+            allDay: ev.allDay,
+            status: ev.status,
+            responseStatus: selfAttendee.responseStatus,
+            invitedAt: ev._creationTime,
+            organizerEmail: organizer.email.toLowerCase(),
+            organizerName: organizer.displayName,
+            calendarColor: cal.colorOverride ?? cal.backgroundColor,
+          });
+        }
+      }
+    }
+
+    rows.sort((a, b) => b.invitedAt - a.invitedAt);
+    const top = rows.slice(0, NOTIFICATIONS_LIMIT);
+
+    // Resolve organizer photo/name for the few rows we'll actually render.
+    const out: Array<Row & { organizerPhotoUrl?: string }> = [];
+    for (const row of top) {
+      const orgAcc = await ctx.db
+        .query("googleAccounts")
+        .withIndex("by_email", (q) => q.eq("email", row.organizerEmail))
+        .first();
+      let organizerName = row.organizerName;
+      let organizerPhotoUrl: string | undefined;
+      if (orgAcc !== null) {
+        const orgUser = await ctx.db.get(orgAcc.userId);
+        if (orgUser?.photoStorageId && !orgUser.useDefaultAvatar) {
+          const url = await ctx.storage.getUrl(orgUser.photoStorageId);
+          if (url) organizerPhotoUrl = url;
+        }
+        if (!organizerPhotoUrl && orgAcc.pictureUrl) {
+          organizerPhotoUrl = orgAcc.pictureUrl;
+        }
+        if (!organizerName && orgUser !== null) {
+          const full = `${orgUser.firstName} ${orgUser.lastName}`.trim();
+          if (full) organizerName = full;
+        }
+        if (!organizerName) organizerName = orgAcc.name;
+      }
+      out.push({ ...row, organizerName, organizerPhotoUrl });
+    }
+
+    return out;
+  },
+});
+
 // --- Sync --------------------------------------------------------------
 
 type GoogleEventTime = {
@@ -342,6 +529,7 @@ type GoogleEvent = {
   updated?: string;
   attendees?: GoogleAttendee[];
   eventType?: string;
+  colorId?: string;
 };
 
 type EventsListResponse = {
@@ -371,6 +559,7 @@ type NormalizedEvent = {
   updatedAt: number;
   eventKind: "event" | "workingLocation" | "task";
   attendees?: NormalizedAttendee[];
+  colorId?: string;
 };
 
 type EventChange =
@@ -431,6 +620,7 @@ function normalize(
       updatedAt: ev.updated ? new Date(ev.updated).getTime() : Date.now(),
       eventKind: normalizeEventKind(ev, meta),
       attendees: attendees && attendees.length > 0 ? attendees : undefined,
+      colorId: ev.colorId,
     },
   };
 }
@@ -538,6 +728,61 @@ export const syncCalendar = action({
       changes,
       nextSyncToken,
     });
+
+    // Initial-pull garbage collection. When we ask Google without a sync
+    // token (first pull, or after a 410, or after forceResyncUser clears it),
+    // Google silently OMITS deleted events instead of emitting delete deltas
+    // — deletion deltas only exist in the syncToken delta stream. So any
+    // local row in the initial-pull window that isn't in the response is
+    // stale and must be removed explicitly; otherwise deletes made upstream
+    // while we were offline, or before a full resync, stick around forever.
+    if (!usingSyncToken) {
+      const now = Date.now();
+      const seen: string[] = [];
+      for (const c of changes) {
+        if (c.kind === "upsert") seen.push(c.event.googleEventId);
+        else seen.push(c.googleEventId);
+      }
+      await ctx.runMutation(internal.events._gcMissingEvents, {
+        calendarId: args.calendarId,
+        windowStart: now - INITIAL_PAST_DAYS * 86400_000,
+        windowEnd: now + INITIAL_FUTURE_DAYS * 86400_000,
+        seenGoogleEventIds: seen,
+      });
+    }
+    return null;
+  },
+});
+
+// Delete local event rows in [windowStart, windowEnd) whose googleEventId
+// is not in `seenGoogleEventIds`. Called after an initial/full pull of a
+// calendar so upstream deletes that happened while the syncToken stream
+// was broken get reconciled. Restricted to the window so events outside it
+// (older history, far-future) aren't accidentally wiped.
+export const _gcMissingEvents = internalMutation({
+  args: {
+    calendarId: v.id("calendars"),
+    windowStart: v.number(),
+    windowEnd: v.number(),
+    seenGoogleEventIds: v.array(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const seen = new Set(args.seenGoogleEventIds);
+    const rows = await ctx.db
+      .query("events")
+      .withIndex("by_calendar_and_start", (q) =>
+        q
+          .eq("calendarId", args.calendarId)
+          .gte("start", args.windowStart)
+          .lt("start", args.windowEnd),
+      )
+      .collect();
+    for (const row of rows) {
+      if (!seen.has(row.googleEventId)) {
+        await ctx.db.delete(row._id);
+      }
+    }
     return null;
   },
 });
@@ -559,6 +804,21 @@ export const syncUser = action({
           await ctx.runMutation(internal.events._resetSync, {
             calendarId: c._id,
           });
+        }
+        // Colors pulled from Google land via the `colorId` field added in
+        // the color-sync feature. Calendars synced before that shipped have
+        // events with no colorId; run a one-shot full re-pull per calendar
+        // so those events pick up their colors. Guarded by a per-calendar
+        // marker so it only fires once.
+        const needsColorIdBackfill = await ctx.runQuery(
+          internal.events._calendarNeedsColorIdBackfill,
+          { calendarId: c._id },
+        );
+        if (needsColorIdBackfill) {
+          await ctx.runMutation(
+            internal.events._resetSyncForColorIdBackfill,
+            { calendarId: c._id },
+          );
         }
         await ctx.runAction(api.events.syncCalendar, { calendarId: c._id });
       } catch (err) {
@@ -1144,6 +1404,7 @@ export const _applyChanges = internalMutation({
             updatedAt: v.number(),
             eventKind,
             attendees: v.optional(v.array(rawAttendee)),
+            colorId: v.optional(v.string()),
           }),
         }),
         v.object({
@@ -1199,6 +1460,59 @@ export const _resetSync = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await ctx.db.patch(args.calendarId, { syncToken: undefined });
+    return null;
+  },
+});
+
+// Clears the saved Google sync token on every calendar the user owns, then
+// runs a full syncUser. Escape hatch for when the incremental syncToken has
+// drifted (Google occasionally misses delete deltas after long token lifetimes
+// or token re-issuance) and the user's view no longer matches Google's truth.
+// More expensive than regular sync because it re-pulls the INITIAL_* window
+// per calendar — but only fires when the user explicitly asks for it.
+export const forceResyncUser = action({
+  args: { userId: v.id("users") },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const cals = await ctx.runQuery(internal.calendars._listEnabledForUser, {
+      userId: args.userId,
+    });
+    for (const c of cals) {
+      await ctx.runMutation(internal.events._resetSync, { calendarId: c._id });
+    }
+    await ctx.runAction(api.events.syncUser, { userId: args.userId });
+    return null;
+  },
+});
+
+// True when this calendar has never been touched by the colorId backfill.
+// We only want to force-reset a calendar's sync token once per deploy of
+// the colorId feature; after that, normal incremental sync keeps colorId
+// up to date.
+export const _calendarNeedsColorIdBackfill = internalQuery({
+  args: { calendarId: v.id("calendars") },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const calendar = await ctx.db.get(args.calendarId);
+    if (calendar === null) return false;
+    return calendar.colorIdBackfilledAt === undefined;
+  },
+});
+
+// Atomic "run the one-time backfill for this calendar": clear the sync
+// token (so the next fetch is a full initial pull and returns every event
+// with its current colorId) and stamp the marker so we don't do it again.
+// If the subsequent sync errors out, the marker is still set — but the
+// cleared syncToken means the retry will also be a full pull, so existing
+// events still get their colors on the next attempt.
+export const _resetSyncForColorIdBackfill = internalMutation({
+  args: { calendarId: v.id("calendars") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.calendarId, {
+      syncToken: undefined,
+      colorIdBackfilledAt: Date.now(),
+    });
     return null;
   },
 });

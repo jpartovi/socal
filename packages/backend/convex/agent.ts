@@ -13,7 +13,10 @@ import { createRunState } from "./agentCore/tools/deps.js";
 import { makeCalendarTools } from "./agentCore/tools/index.js";
 
 const agentRunResult = v.union(
-  v.object({ status: v.literal("completed") }),
+  v.object({
+    status: v.literal("completed"),
+    proposalIds: v.array(v.id("eventProposals")),
+  }),
   v.object({
     status: v.literal("no_action"),
     message: v.optional(v.string()),
@@ -25,9 +28,17 @@ export const run = action({
   args: {
     userId: v.id("users"),
     message: v.string(),
+    taggedFriends: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          userId: v.id("users"),
+        }),
+      ),
+    ),
   },
   returns: agentRunResult,
-  handler: async (ctx, { userId, message }) => {
+  handler: async (ctx, { userId, message, taggedFriends }) => {
     const user = await ctx.runQuery(api.users.getById, { userId });
 
     const llm = createAgentLlm();
@@ -43,6 +54,14 @@ export const run = action({
       nowIso: new Date().toISOString(),
       userFirstName: user?.firstName,
       userTimeZone: user?.timeZone,
+      ...(taggedFriends !== undefined
+        ? {
+            taggedFriends: taggedFriends.map((f) => ({
+              name: f.name,
+              userId: f.userId as string,
+            })),
+          }
+        : {}),
     });
 
     try {
@@ -53,7 +72,14 @@ export const run = action({
         userMessage: message,
         recursionLimit: 40,
       });
-      return parseFinishAgentFromMessages(result.messages);
+      const parsed = parseFinishAgentFromMessages(result.messages);
+      if (parsed.status === "completed") {
+        return {
+          status: "completed" as const,
+          proposalIds: runState.proposalIds,
+        };
+      }
+      return parsed;
     } catch (err) {
       // LangGraph throws GraphRecursionError when the step limit is hit
       // before the agent calls finish_agent. If the run already produced
@@ -65,7 +91,10 @@ export const run = action({
           "[agent] recursion limit hit, but a proposal was created — returning completed",
           { proposalIds: runState.proposalIds },
         );
-        return { status: "completed" as const };
+        return {
+          status: "completed" as const,
+          proposalIds: runState.proposalIds,
+        };
       }
       if (isRecursion) {
         return {

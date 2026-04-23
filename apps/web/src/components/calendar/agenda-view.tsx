@@ -76,15 +76,15 @@ export function AgendaView({
   }
 
   return (
-    <div className="flex flex-col gap-6 px-2">
+    <div className="flex flex-col gap-7 px-2">
       {visibleDays.map((d) => {
         const items = (byDay.get(d.getTime()) ?? [])
           .slice()
           .sort((a, b) => a.start - b.start);
         return (
-          <div key={d.getTime()} className="flex flex-col gap-2">
+          <div key={d.getTime()} className="flex flex-col gap-3">
             <DayHeader date={d} />
-            <ul className="flex flex-col divide-y rounded-xl border">
+            <ul className="flex flex-col gap-2">
               {items.map((item) =>
                 item.kind === "event" ? (
                   <AgendaRow
@@ -94,7 +94,6 @@ export function AgendaView({
                 ) : (
                   <li
                     key={`${d.getTime()}-proposal-${item.row.proposal._id}`}
-                    className="px-2 py-2"
                   >
                     <ProposalItem row={item.row} variant="agenda" />
                   </li>
@@ -111,21 +110,22 @@ export function AgendaView({
 function DayHeader({ date }: { date: Date }) {
   const today = sameDay(date, new Date());
   return (
-    <div className="flex items-baseline gap-2 px-1">
+    <div className="flex items-baseline gap-3 px-1">
       <span
-        className={`text-sm font-medium ${
-          today ? "text-primary" : "text-foreground"
-        }`}
+        className="font-display text-2xl leading-none tracking-tight text-foreground/90"
+        style={{ fontFamily: "var(--font-display)" }}
       >
         {date.toLocaleDateString(undefined, {
           weekday: "long",
+        })}
+      </span>
+      <span className="text-xs text-muted-foreground">
+        {date.toLocaleDateString(undefined, {
           month: "short",
           day: "numeric",
         })}
+        {today ? " · Today" : ""}
       </span>
-      {today && (
-        <span className="text-xs text-muted-foreground">Today</span>
-      )}
     </div>
   );
 }
@@ -140,7 +140,7 @@ function AgendaRow({ row }: { row: EventRow }) {
       <EventPopover row={row}>
         <button
           type="button"
-          className="flex w-full items-start gap-3 px-3 py-2.5 text-left outline-none transition hover:bg-muted"
+          className="flex w-full items-start gap-3 rounded-xl bg-card/70 px-4 py-3 text-left shadow-[0_1px_2px_rgba(16,24,40,0.03),0_6px_16px_rgba(16,24,40,0.05)] outline-none backdrop-blur-sm transition-transform duration-150 ease-out hover:-translate-y-px hover:shadow-[0_2px_4px_rgba(16,24,40,0.04),0_10px_24px_rgba(16,24,40,0.06)]"
           title={`${eventKindLabel(row)}: ${event.summary}`}
         >
           {task ? (
@@ -163,7 +163,12 @@ function AgendaRow({ row }: { row: EventRow }) {
           )}
           <div className="flex min-w-0 flex-1 items-baseline justify-between gap-3">
             <div className="flex min-w-0 flex-col">
-              <span className="truncate text-sm">{event.summary}</span>
+              <span
+                className="truncate text-base font-medium"
+                style={{ color: task || workingLocation ? color : undefined }}
+              >
+                {event.summary}
+              </span>
               {(task || workingLocation) && (
                 <span className="truncate text-xs text-muted-foreground">
                   {eventKindLabel(row)}

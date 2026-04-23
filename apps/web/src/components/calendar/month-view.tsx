@@ -1,7 +1,11 @@
 "use client";
 
 import { EventPopover } from "@/components/calendar/event-popover";
-import { eventColor, eventTextColor } from "@/components/calendar/colors";
+import {
+  eventAccent,
+  eventColor,
+  eventSoftFill,
+} from "@/components/calendar/colors";
 import {
   eventKindLabel,
   isTask,
@@ -18,7 +22,7 @@ import {
 import { ProposalItem } from "@/components/calendar/proposal-item";
 import type { EventRow, ProposalRow } from "@/components/calendar/types";
 
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MAX_PILLS_PER_CELL = 3;
 
 type CellItem =
@@ -66,18 +70,18 @@ export function MonthView({
   }
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-2xl border">
-      <div className="grid grid-cols-7 border-b bg-muted/30">
+    <div className="flex flex-col overflow-hidden rounded-3xl">
+      <div className="grid grid-cols-7">
         {WEEKDAYS.map((d) => (
           <div
             key={d}
-            className="px-2 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground"
+            className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70"
           >
             {d}
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 grid-rows-6">
+      <div className="grid grid-cols-7 grid-rows-6 gap-1 p-1">
         {days.map((d) => {
           const inMonth = d.getMonth() === anchor.getMonth();
           const today = sameDay(d, new Date());
@@ -89,18 +93,21 @@ export function MonthView({
           return (
             <div
               key={d.getTime()}
-              className={`flex min-h-24 flex-col gap-0.5 border-b border-l p-1 ${
-                inMonth ? "bg-background" : "bg-muted/20"
+              className={`flex min-h-24 flex-col gap-0.5 rounded-2xl p-1.5 ${
+                inMonth
+                  ? "bg-card/60 shadow-[0_1px_2px_rgba(16,24,40,0.03),0_6px_16px_rgba(16,24,40,0.04)] backdrop-blur-sm"
+                  : "bg-transparent"
               }`}
             >
               <span
-                className={`self-start text-[11px] ${
+                className={`self-start font-display text-sm leading-none tracking-tight ${
                   today
-                    ? "rounded-full bg-primary px-1.5 py-0.5 font-semibold text-primary-foreground"
+                    ? "flex h-6 w-6 items-center justify-center rounded-full bg-foreground text-background"
                     : inMonth
-                      ? "text-foreground"
-                      : "text-muted-foreground"
+                      ? "text-foreground/80"
+                      : "text-muted-foreground/60"
                 }`}
+                style={{ fontFamily: "var(--font-display)" }}
               >
                 {d.getDate()}
               </span>
@@ -141,22 +148,21 @@ function MonthPill({ row }: { row: EventRow }) {
       <EventPopover row={row}>
         <button
           type="button"
-          className={`flex items-center gap-1 truncate rounded px-1 py-0.5 text-left text-[10px] leading-tight outline-none transition hover:brightness-95 ${
+          className={`flex items-center gap-1.5 truncate rounded-full px-2 py-0.5 text-left text-[10px] leading-tight outline-none transition-transform duration-150 ease-out will-change-transform hover:scale-[1.02] active:scale-[0.98] ${
             workingLocation ? "border-l-4 bg-transparent" : ""
           }`}
           style={{
-            backgroundColor: workingLocation
-              ? "transparent"
-              : color,
+            backgroundColor: workingLocation ? undefined : eventSoftFill(row),
             borderColor: workingLocation ? color : undefined,
-            color: workingLocation
-              ? color
-              : eventTextColor(row),
+            color: eventAccent(row),
+            boxShadow: workingLocation
+              ? undefined
+              : "0 1px 1px rgba(16,24,40,0.04)",
           }}
           title={`${eventKindLabel(row)}: ${event.summary}`}
         >
           {workingLocation && <BuildingIcon className="size-3 shrink-0" />}
-          <span className="truncate">{event.summary}</span>
+          <span className="truncate font-medium">{event.summary}</span>
         </button>
       </EventPopover>
     );
@@ -165,8 +171,8 @@ function MonthPill({ row }: { row: EventRow }) {
     <EventPopover row={row}>
       <button
         type="button"
-        className="flex items-center gap-1 truncate rounded px-1 text-left text-[10px] leading-tight outline-none hover:bg-muted"
-        style={{ color: task ? color : undefined }}
+        className="flex items-center gap-1 truncate rounded-md px-1 text-left text-[10px] leading-tight outline-none transition-transform duration-150 ease-out will-change-transform hover:scale-[1.02] active:scale-[0.98] hover:bg-muted"
+        style={{ color: color }}
         title={`${eventKindLabel(row)}: ${event.summary}`}
       >
         {task ? (
@@ -182,12 +188,12 @@ function MonthPill({ row }: { row: EventRow }) {
               className="h-2 w-2 shrink-0 rounded-full"
               style={{ backgroundColor: color }}
             />
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 opacity-70">
               {formatTime(event.start)}
             </span>
           </>
         )}
-        <span className="truncate">{event.summary}</span>
+        <span className="truncate font-medium">{event.summary}</span>
       </button>
     </EventPopover>
   );

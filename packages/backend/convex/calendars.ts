@@ -39,6 +39,7 @@ const calendarDoc = v.object({
   timeZone: v.optional(v.string()),
   syncToken: v.optional(v.string()),
   lastSyncedAt: v.optional(v.number()),
+  colorIdBackfilledAt: v.optional(v.number()),
 });
 
 export const listByAccount = query({

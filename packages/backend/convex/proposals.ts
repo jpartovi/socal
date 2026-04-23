@@ -42,6 +42,9 @@ const proposalDoc = v.object({
   proposedAt: v.number(),
   respondedAt: v.optional(v.number()),
   createdEventId: v.optional(v.id("events")),
+  groupId: v.optional(v.string()),
+  groupIndex: v.optional(v.number()),
+  groupSize: v.optional(v.number()),
   participantFriendUserIds: v.optional(v.array(v.id("users"))),
 });
 
@@ -204,6 +207,80 @@ export const create = mutation({
   },
 });
 
+// Batch variant: insert N linked proposals sharing a groupId so the UI can
+// render them as an option set ("1 of 3") and accepting one can cascade-reject
+// the others. Single-option calls are allowed (groupSize=1) but the agent
+// should prefer `create` for that case.
+export const createBatch = mutation({
+  args: {
+    userId: v.id("users"),
+    calendarId: v.id("calendars"),
+    options: v.array(
+      v.object({
+        summary: v.string(),
+        description: v.optional(v.string()),
+        location: v.optional(v.string()),
+        start: v.number(),
+        end: v.number(),
+        allDay: v.boolean(),
+      }),
+    ),
+    participantFriendUserIds: v.optional(v.array(v.id("users"))),
+  },
+  returns: v.array(v.id("eventProposals")),
+  handler: async (ctx, args) => {
+    if (args.options.length === 0) {
+      throw new ConvexError("Must provide at least one option");
+    }
+    if (args.options.length > 3) {
+      throw new ConvexError("At most 3 options per batch");
+    }
+    for (const opt of args.options) {
+      if (opt.end <= opt.start) {
+        throw new ConvexError("End must be after start");
+      }
+    }
+    const calendar = await assertUserOwnsCalendar(
+      ctx,
+      args.userId,
+      args.calendarId,
+    );
+    if (calendar.accessRole !== "owner" && calendar.accessRole !== "writer") {
+      throw new ConvexError("Calendar is read-only");
+    }
+    const friendIds = dedupeFriendUserIds(args.participantFriendUserIds ?? []);
+    for (const fid of friendIds) {
+      await assertAcceptedFriendship(ctx, args.userId, fid);
+    }
+    const groupId = globalThis.crypto.randomUUID();
+    const groupSize = args.options.length;
+    const proposedAt = Date.now();
+    const ids: Id<"eventProposals">[] = [];
+    for (let i = 0; i < args.options.length; i++) {
+      const opt = args.options[i];
+      const id = await ctx.db.insert("eventProposals", {
+        userId: args.userId,
+        calendarId: args.calendarId,
+        summary: opt.summary,
+        description: opt.description,
+        location: opt.location,
+        start: opt.start,
+        end: opt.end,
+        allDay: opt.allDay,
+        status: "pending",
+        proposedAt,
+        groupId,
+        groupIndex: i,
+        groupSize,
+        participantFriendUserIds:
+          friendIds.length > 0 ? friendIds : undefined,
+      });
+      ids.push(id);
+    }
+    return ids;
+  },
+});
+
 // Calendar view uses this to render ghost cards. Window semantics mirror
 // events.listForUserInRange: start falls in [start, end). Only `pending`
 // rows are returned; accepted/rejected ones stay in the table but stay out
@@ -242,6 +319,7 @@ export const listForUserInRange = query({
         userId: Id<"users">;
         firstName: string;
         lastName: string;
+        photoUrl: string | null;
       }>;
     }> = [];
     for (const proposal of inRange) {
@@ -278,6 +356,79 @@ export const listForUserInRange = query({
       });
     }
     results.sort((a, b) => a.proposal.start - b.proposal.start);
+    return results;
+  },
+});
+
+// Group view for the proposal popover carousel. Returns every pending
+// proposal in the group, sorted by groupIndex, so the UI can let the user
+// flip between options with ◀/▶. Rejected siblings are filtered out — once
+// one is accepted the cascade-reject leaves only the accepted row, and the
+// popover is expected to unmount at that point anyway.
+export const listGroup = query({
+  args: {
+    userId: v.id("users"),
+    groupId: v.string(),
+  },
+  returns: v.array(proposalWithCalendar),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("eventProposals")
+      .withIndex("by_group", (q) => q.eq("groupId", args.groupId))
+      .collect();
+    const pending = rows.filter(
+      (r) => r.userId === args.userId && r.status === "pending",
+    );
+    pending.sort((a, b) => (a.groupIndex ?? 0) - (b.groupIndex ?? 0));
+    const results: Array<{
+      proposal: Doc<"eventProposals">;
+      calendar: {
+        _id: Id<"calendars">;
+        summary: string;
+        summaryOverride?: string;
+        backgroundColor: string;
+        foregroundColor: string;
+      };
+      participants: Array<{
+        userId: Id<"users">;
+        firstName: string;
+        lastName: string;
+        photoUrl: string | null;
+      }>;
+    }> = [];
+    for (const proposal of pending) {
+      const calendar = await ctx.db.get(proposal.calendarId);
+      if (calendar === null) continue;
+      const participantIds = proposal.participantFriendUserIds ?? [];
+      const participants: Array<{
+        userId: Id<"users">;
+        firstName: string;
+        lastName: string;
+        photoUrl: string | null;
+      }> = [];
+      for (const uid of participantIds) {
+        const u = await ctx.db.get(uid);
+        if (u === null) continue;
+        const photoUrl = await resolvePhotoUrlForUser(ctx, u);
+        participants.push({
+          userId: u._id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          photoUrl,
+        });
+      }
+      results.push({
+        proposal,
+        calendar: {
+          _id: calendar._id,
+          summary: calendar.summary,
+          summaryOverride: calendar.summaryOverride,
+          backgroundColor: calendar.colorOverride ?? calendar.backgroundColor,
+          foregroundColor: calendar.foregroundColor,
+        },
+        participants,
+      });
+    }
     return results;
   },
 });
@@ -394,11 +545,30 @@ export const _markAccepted = mutation({
     if (proposal.status !== "pending") {
       throw new ConvexError(`Proposal is already ${proposal.status}`);
     }
+    const respondedAt = Date.now();
     await ctx.db.patch(args.proposalId, {
       status: "accepted",
-      respondedAt: Date.now(),
+      respondedAt,
       createdEventId: args.createdEventId,
     });
+    // Option-set semantics: accepting one sibling auto-rejects every other
+    // still-pending sibling in the same group. Already-accepted/rejected
+    // siblings stay as they are — this is additive, not a re-patch.
+    const groupId = proposal.groupId;
+    if (groupId !== undefined) {
+      const siblings = await ctx.db
+        .query("eventProposals")
+        .withIndex("by_group", (q) => q.eq("groupId", groupId))
+        .collect();
+      for (const sibling of siblings) {
+        if (sibling._id === args.proposalId) continue;
+        if (sibling.status !== "pending") continue;
+        await ctx.db.patch(sibling._id, {
+          status: "rejected",
+          respondedAt,
+        });
+      }
+    }
     return null;
   },
 });
@@ -419,6 +589,32 @@ export const reject = mutation({
       status: "rejected",
       respondedAt: Date.now(),
     });
+    return null;
+  },
+});
+
+// Reject every still-pending proposal in an option-set group. Used by the
+// popover's "Reject all" affordance so the user can dismiss a whole set of
+// alternatives in one shot rather than clicking Reject N times. Sibling
+// ownership is re-checked per row because `groupId` alone doesn't prove the
+// rows belong to the caller.
+export const rejectGroup = mutation({
+  args: {
+    userId: v.id("users"),
+    groupId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("eventProposals")
+      .withIndex("by_group", (q) => q.eq("groupId", args.groupId))
+      .collect();
+    const respondedAt = Date.now();
+    for (const row of rows) {
+      if (row.userId !== args.userId) continue;
+      if (row.status !== "pending") continue;
+      await ctx.db.patch(row._id, { status: "rejected", respondedAt });
+    }
     return null;
   },
 });

@@ -255,6 +255,28 @@ function EventPopoverBody({
         </div>
       </div>
 
+      {event.attendees && event.attendees.length > 0 && (
+        <Row icon={<PeopleIcon />}>
+          <div className="flex flex-col gap-1.5">
+            {event.attendees
+              .filter((a) => !a.self)
+              .map((a) => (
+                <div key={a.email} className="flex items-center gap-2">
+                  <Avatar
+                    name={a.displayName ?? a.email}
+                    photoUrl={a.photoUrl ?? null}
+                    size="xs"
+                    className="size-5 border-0"
+                  />
+                  <span className="truncate text-xs">
+                    {a.displayName ?? a.email}
+                  </span>
+                </div>
+              ))}
+          </div>
+        </Row>
+      )}
+
       {event.location && (
         <Row icon={<LocationIcon />}>{event.location}</Row>
       )}
@@ -332,7 +354,7 @@ function IconButton({
       disabled={disabled}
       aria-label={label}
       title={label}
-      className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40"
+      className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-transform duration-150 ease-out hover:scale-[1.05] active:scale-[0.95] hover:bg-muted hover:text-foreground disabled:opacity-40"
     >
       {children}
     </button>
